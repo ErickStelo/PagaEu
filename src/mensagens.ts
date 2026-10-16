@@ -164,12 +164,12 @@ export async function enviarMensagem(
   tipo: TipoMensagem,
   agora: Date,
   somenteCanal?: Canal,
-): Promise<void> {
+): Promise<{ ok: boolean; motivo: string | null } | null> {
   const ctx = await carregar(cliente, cobrancaId);
-  if (!ctx) return;
-  if ((tipo === 'cobranca' || tipo === 'inadimplencia') && ctx.status !== 'aberta') return;
-  if (tipo === 'confirmacao' && ctx.status !== 'paga') return;
-  if (tipo === 'cobranca' && !ctx.temPixAtivo) return;
+  if (!ctx) return null;
+  if ((tipo === 'cobranca' || tipo === 'inadimplencia') && ctx.status !== 'aberta') return null;
+  if (tipo === 'confirmacao' && ctx.status !== 'paga') return null;
+  if (tipo === 'cobranca' && !ctx.temPixAtivo) return null;
   const modelos = await consultar<{ canal: Canal; assunto: string | null; corpo: string }>(
     cliente,
     'SELECT canal, assunto, corpo FROM template WHERE tipo = $1',
@@ -178,6 +178,7 @@ export async function enviarMensagem(
   const smtp = await carregarSmtp(cliente);
   const vars = variaveis(ctx, tipo, agora);
   const canais: Canal[] = ['email', 'whatsapp'];
+  let ultimo: { ok: boolean; motivo: string | null } | null = null;
   for (const canal of canais) {
     if (somenteCanal && canal !== somenteCanal) continue;
     const ligado = canal === 'email' ? ctx.canalEmail : ctx.canalWhatsapp;
@@ -189,24 +190,36 @@ export async function enviarMensagem(
     try {
       if (canal === 'email') {
         const resultado = await app.correio.enviar(smtp, { to: ctx.email, subject: assunto, text: corpo });
-        await registrar(cliente, cobrancaId, tipo, canal, agora, resultado.ok, resultado.ok ? null : redigir(resultado.motivo, [smtp?.senha]));
+        const motivo = resultado.ok ? null : redigir(resultado.motivo, [smtp?.senha]);
+        await registrar(cliente, cobrancaId, tipo, canal, agora, resultado.ok, motivo);
+        ultimo = { ok: resultado.ok, motivo };
       } else {
         const resultado = await app.evolution.enviarTexto(ctx.whatsapp, corpo);
-        await registrar(
-          cliente,
-          cobrancaId,
-          tipo,
-          canal,
-          agora,
-          resultado.ok,
-          resultado.ok ? null : redigir(resultado.motivo, [app.env.evolutionApiKey]),
-        );
+        if (!resultado.ok) {
+          const motivo = redigir(resultado.motivo, [app.env.evolutionApiKey]);
+          await registrar(cliente, cobrancaId, tipo, canal, agora, false, motivo);
+          ultimo = { ok: false, motivo };
+          continue;
+        }
+        if (tipo === 'cobranca' && ctx.copiaCola) {
+          const chave = await app.evolution.enviarTexto(ctx.whatsapp, ctx.copiaCola);
+          if (!chave.ok) {
+            const motivo = redigir(chave.motivo, [app.env.evolutionApiKey]);
+            await registrar(cliente, cobrancaId, tipo, canal, agora, false, motivo);
+            ultimo = { ok: false, motivo };
+            continue;
+          }
+        }
+        await registrar(cliente, cobrancaId, tipo, canal, agora, true, null);
+        ultimo = { ok: true, motivo: null };
       }
     } catch (erro) {
       const motivo = redigir(erro instanceof Error ? erro.message : 'Falha no envio', [smtp?.senha, app.env.evolutionApiKey]);
       await registrar(cliente, cobrancaId, tipo, canal, agora, false, motivo);
+      ultimo = { ok: false, motivo };
     }
   }
+  return ultimo;
 }
 
 export async function reenviar(
@@ -215,7 +228,7 @@ export async function reenviar(
   tipo: TipoMensagem,
   canal: Canal,
   agora = app.clock(),
-): Promise<{ ok: true } | { ok: false; aviso: string }> {
+): Promise<{ ok: true; aviso: string } | { ok: false; aviso: string }> {
   const pessoa = await consultar<{ pessoa_id: string }>(app.pool, 'SELECT pessoa_id FROM cobranca WHERE id = $1', [cobrancaId]);
   const pessoaId = pessoa[0]?.pessoa_id;
   if (!pessoaId) return { ok: false, aviso: 'Cobrança não encontrada.' };
@@ -229,7 +242,8 @@ export async function reenviar(
       temPixAtivo: ctx.temPixAtivo,
     });
     if (!permitido) return { ok: false, aviso: 'Este reenvio não está disponível para a cobrança.' };
-    await enviarMensagem(app, cliente, cobrancaId, tipo, agora, canal);
-    return { ok: true };
+    const envio = await enviarMensagem(app, cliente, cobrancaId, tipo, agora, canal);
+    if (!envio?.ok) return { ok: false, aviso: envio?.motivo || 'Não foi possível reenviar.' };
+    return { ok: true, aviso: canal === 'email' ? 'E-mail reenviado.' : 'WhatsApp reenviado.' };
   });
 }

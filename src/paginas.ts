@@ -28,16 +28,43 @@ const NOMES_TIPO: Record<string, string> = {
 const NOMES_CANAL: Record<string, string> = { email: 'E-mail', whatsapp: 'WhatsApp' };
 const NOMES_STATUS: Record<string, string> = { aberta: 'Aberta', paga: 'Paga', cancelada: 'Cancelada' };
 
-export function layout(opcoes: { titulo: string; corpo: string; autenticado: boolean; flash: Flash | null }): string {
+type Secao = 'quem' | 'historico' | 'templates' | 'configuracao';
+
+function secaoAtual(caminho: string): Secao {
+  if (caminho.startsWith('/cobrancas')) return 'historico';
+  if (caminho.startsWith('/templates')) return 'templates';
+  if (caminho.startsWith('/configuracao')) return 'configuracao';
+  return 'quem';
+}
+
+function itemNav(atual: Secao, id: Secao, href: string, nome: string): string {
+  const ativo = atual === id ? ' class="ativo" aria-current="page"' : '';
+  return `<a href="${href}"${ativo}>${nome}</a>`;
+}
+
+export function layout(opcoes: { titulo: string; corpo: string; autenticado: boolean; flash: Flash | null; caminho?: string }): string {
+  const atual = secaoAtual(opcoes.caminho ?? '/');
   const nav = opcoes.autenticado
-    ? `<nav>
-        <a href="/">Quem deve</a>
-        <a href="/cobrancas">Histórico</a>
-        <a href="/templates">Templates</a>
-        <a href="/configuracao">Configuração</a>
-        <form method="post" action="/sair"><button type="submit">Sair</button></form>
-      </nav>`
-    : '';
+    ? `<aside>
+        <a class="marca" href="/">PagaEu</a>
+        <nav>
+          ${itemNav(atual, 'quem', '/', 'Quem deve')}
+          ${itemNav(atual, 'historico', '/cobrancas', 'Histórico')}
+          ${itemNav(atual, 'templates', '/templates', 'Templates')}
+          ${itemNav(atual, 'configuracao', '/configuracao', 'Configuração')}
+        </nav>
+        <form method="post" action="/sair"><button class="sair" type="submit">Sair</button></form>
+      </aside>`
+    : `<section class="marca-login">
+        <p class="olho">Console PIX</p>
+        <strong>PagaEu</strong>
+        <p>Cobrança PIX do mês, num painel só seu.</p>
+        <ul>
+          <li>Quem deve</li>
+          <li>PIX do Mercado Pago</li>
+          <li>Aviso por e-mail e WhatsApp</li>
+        </ul>
+      </section>`;
   const flash = opcoes.flash
     ? `<div class="flash ${opcoes.flash.tipo === 'ok' ? 'ok' : 'erro'}">${e(opcoes.flash.texto)}</div>`
     : '';
@@ -47,56 +74,139 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${e(opcoes.titulo)} · PagaEu</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet">
   <style>
-    :root { color-scheme: light; --bg:#efe6d6; --paper:#fffaf3; --ink:#241c14; --muted:#6f655b; --line:#e3d5c3; --green:#1c6b45; --green-bg:#e7f6ee; --red:#8d2d2d; --red-bg:#fdeeee; --amber:#8a5a12; --amber-bg:#fff4df; --gray:#8d847b; }
+    :root { color-scheme: dark; --bg:#070B14; --paper:#101828; --ink:#E8EEF9; --muted:#A8B6CF; --line:rgba(255,255,255,.08); --ciano:#22D3EE; --ciano-ink:#04252B; --ok:#6EE7B7; --ok-bg:rgba(52,211,153,.14); --red:#FCA5A5; --red-bg:rgba(248,113,113,.14); --amber:#FCD34D; --amber-bg:rgba(252,211,77,.12); --gray:#7E8BA3; }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: "Segoe UI", "Helvetica Neue", sans-serif; background: radial-gradient(circle at top left, #f7f1e6, var(--bg) 42%); color: var(--ink); }
-    header { display:flex; justify-content:space-between; gap:16px; align-items:center; padding:18px 28px; border-bottom:1px solid var(--line); background: rgba(255,250,243,.92); position:sticky; top:0; }
-    header strong { font-family: Georgia, "Iowan Old Style", serif; font-size: 1.4rem; letter-spacing: .02em; }
-    nav { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
-    nav a { color: var(--ink); text-decoration:none; font-weight:600; }
-    main { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
-    h1, h2 { font-family: Georgia, "Iowan Old Style", serif; font-weight: 600; }
-    h1 { margin: 0 0 8px; font-size: 2rem; }
-    .sub { color: var(--muted); margin: 0 0 22px; }
-    a { color: var(--green); }
-    .cards { display:grid; gap:14px; }
-    .card, form.bloco, .bloco { background: var(--paper); border:1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
-    .topo { display:flex; justify-content:space-between; gap:12px; align-items:baseline; flex-wrap:wrap; }
-    .dinheiro { font-variant-numeric: tabular-nums; font-weight: 700; }
-    .muted { color: var(--muted); }
-    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
-    label { display:flex; flex-direction:column; gap:4px; font-size:.92rem; }
-    input, select, textarea { font: inherit; color: inherit; background:#fff; border:1px solid #d9cbb8; border-radius:10px; padding:8px 10px; }
-    textarea { width:100%; min-height: 180px; }
-    button, .botao { background: var(--ink); color: #fffaf3; border:0; border-radius: 999px; padding: 8px 14px; font: inherit; cursor: pointer; text-decoration:none; display:inline-block; }
-    button.secundario, .botao.secundario { background: transparent; color: var(--ink); border:1px solid var(--line); }
-    button.perigo { background: var(--red); }
-    button.destaque { background: var(--green); }
-    table { width:100%; border-collapse: collapse; }
-    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-    .flash { white-space: pre-wrap; border-radius:12px; padding:12px 14px; margin-bottom:16px; }
-    .flash.ok { background: var(--green-bg); }
-    .flash.erro, .alerta { background: var(--amber-bg); border:1px solid #efd3a4; border-radius:12px; padding:12px 14px; margin: 10px 0; }
+    body { margin:0; min-height:100vh; font-family: Geist, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+    body.app { display:grid; grid-template-columns: 240px minmax(0, 1fr); }
+    aside { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; gap:18px; padding:22px 14px; background:#0B1220; border-right:1px solid var(--line); }
+    .marca, aside .marca { font-family: "Space Grotesk", sans-serif; font-size:1.35rem; font-weight:600; letter-spacing:-.03em; color:var(--ink); text-decoration:none; padding:0 10px; }
+    nav { display:flex; flex-direction:column; gap:4px; }
+    nav a { color:var(--muted); text-decoration:none; font-weight:600; border-radius:8px; padding:10px 12px; }
+    nav a:hover { color:var(--ink); background:rgba(255,255,255,.04); }
+    nav a.ativo { color:var(--ciano); background:rgba(34,211,238,.1); }
+    aside form { margin-top:auto; }
+    button.sair { width:100%; text-align:left; background:transparent; color:var(--muted); border:1px solid var(--line); }
+    main { padding:32px 32px 72px; min-width:0; }
+    h1, h2 { font-family: "Space Grotesk", sans-serif; font-weight:600; letter-spacing:-.03em; }
+    h1 { margin:0 0 8px; font-size:2rem; }
+    h2 { margin:0 0 12px; font-size:1.15rem; }
+    .sub, .trilha { color:var(--muted); margin:0 0 22px; }
+    .trilha { margin-bottom:8px; font-size:.92rem; }
+    a { color:var(--ciano); }
+    .metricas { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-bottom:16px; }
+    .metrica { background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+    .metrica span { display:block; color:var(--muted); font-size:.8rem; letter-spacing:.04em; text-transform:uppercase; }
+    .metrica strong { display:block; margin-top:6px; font-family:"JetBrains Mono", ui-monospace, monospace; font-size:1.35rem; font-weight:600; }
+    .metrica .ciano { color:var(--ciano); }
+    .metrica .ok { color:var(--ok); }
+    .metrica .amber { color:var(--amber); }
+    .cards { display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); }
+    .card, form.bloco, .bloco, section.bloco { background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:16px 18px; }
+    .topo { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; margin-bottom:16px; }
+    .dinheiro { font-family:"JetBrains Mono", ui-monospace, monospace; font-variant-numeric:tabular-nums; font-weight:600; }
+    .muted { color:var(--muted); }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:end; }
+    .row > label { flex:1 1 180px; }
+    .row input, .row select { width:100%; }
+    form.bloco, section.bloco { margin-bottom:16px; }
+    form.bloco h2:not(:first-of-type) { margin-top:28px; padding-top:20px; border-top:1px solid var(--line); }
+    label { display:flex; flex-direction:column; gap:6px; font-size:.92rem; color:var(--muted); min-width:0; }
+    input, select, textarea { font:inherit; color:var(--ink); background:#0B1220; border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:9px 11px; }
+    input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible { outline:2px solid var(--ciano); outline-offset:2px; }
+    textarea { width:100%; min-height:180px; }
+    textarea.codigo { min-height:72px; }
+    button, .botao { background:var(--ciano); color:var(--ciano-ink); border:0; border-radius:8px; padding:9px 14px; font:inherit; font-weight:600; cursor:pointer; text-decoration:none; display:inline-block; }
+    button.secundario, .botao.secundario { background:transparent; color:var(--ink); border:1px solid var(--line); }
+    button.perigo { background:#7F1D1D; color:#FEE2E2; }
+    button.destaque { background:#047857; color:#ECFDF5; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+    th:last-child, td:last-child { width:1%; white-space:nowrap; }
+    td:last-child .acoes { margin-top:0; flex-wrap:nowrap; }
+    th { color:var(--muted); font-size:.75rem; letter-spacing:.04em; text-transform:uppercase; font-weight:600; }
+    .flash { white-space:pre-wrap; border-radius:8px; padding:12px 14px; margin-bottom:16px; }
+    .flash.ok { background:var(--ok-bg); color:var(--ok); }
+    .flash.erro, .alerta { background:var(--amber-bg); color:#FDE68A; border:1px solid rgba(252,211,77,.28); border-radius:8px; padding:12px 14px; margin:10px 0; }
     .ponto { display:inline-flex; align-items:center; gap:6px; margin-right:10px; }
-    .ponto i { width:9px; height:9px; border-radius:50%; display:inline-block; background: var(--gray); }
-    .ponto.enviado i { background: var(--green); }
-    .ponto.falha i { background: var(--red); }
-    .tag { border-radius:999px; padding:2px 8px; background:#f3ecdf; font-size:.85rem; }
-    .tag.off { background: var(--red-bg); }
-    .acoes { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
-    .codigo { font-family: ui-monospace, monospace; word-break: break-all; }
-    @media (max-width: 720px) { header, main { padding-left:14px; padding-right:14px; } table { display:block; overflow:auto; } }
+    .ponto i { width:9px; height:9px; border-radius:50%; display:inline-block; background:var(--gray); }
+    .ponto.enviado i { background:var(--ok); }
+    .ponto.falha i { background:#F87171; }
+    .tag { display:inline-flex; align-items:center; border-radius:8px; padding:2px 8px; background:rgba(255,255,255,.06); font-size:.8rem; }
+    .tag.ok { color:var(--ok); background:var(--ok-bg); }
+    .tag.off { color:var(--red); background:var(--red-bg); }
+    .tag.aberta { color:#67E8F9; background:rgba(34,211,238,.12); }
+    .acoes, .checks { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+    .acoes { justify-content:flex-end; }
+    .checks label, label:has(input[type="checkbox"]), label:has(input[type="radio"]) { flex-direction:row; align-items:center; color:var(--ink); }
+    input[type="checkbox"], input[type="radio"] { accent-color:var(--ciano); width:1rem; height:1rem; }
+    .codigo { font-family:"JetBrains Mono", ui-monospace, monospace; word-break:break-all; }
+    .ficha { display:grid; grid-template-columns:minmax(0, 1fr) 340px; gap:16px; align-items:start; }
+    .lateral { display:grid; gap:14px; }
+    body.porta { display:grid; grid-template-columns:minmax(280px, 1.05fr) minmax(320px, 1fr); grid-template-rows:1fr; }
+    .marca-login { padding:64px 56px; background:#0B1220; border-top:3px solid var(--ciano); }
+    .marca-login .olho { margin:0 0 18px; color:var(--ciano); font-family:"JetBrains Mono", ui-monospace, monospace; font-size:.78rem; letter-spacing:.08em; text-transform:uppercase; }
+    .marca-login strong { display:block; font-family:"Space Grotesk", sans-serif; font-size:3rem; letter-spacing:-.04em; }
+    .marca-login p { color:var(--muted); font-size:1.05rem; max-width:28ch; }
+    .marca-login ul { margin:28px 0 0; padding:0; list-style:none; display:grid; gap:10px; }
+    .marca-login li { display:flex; align-items:center; gap:10px; }
+    .marca-login li::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--ciano); }
+    body.porta main { place-self:center; width:min(440px, calc(100% - 48px)); background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:28px; }
+    body.porta form { display:grid; gap:14px; }
+    body.porta form + form { margin-top:4px; }
+    body.porta .sub { margin-bottom:18px; }
+    @media (max-width: 1100px) {
+      .ficha { display:block; }
+      .lateral { margin-top:16px; }
+    }
+    @media (max-width: 720px) {
+      body.app, body.porta { display:block; }
+      aside { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); }
+      nav { flex-direction:row; flex-wrap:wrap; }
+      aside form { margin-top:12px; }
+      main, .marca-login { padding:20px 16px 48px; }
+      .metrica, .card { margin-bottom:12px; }
+      table { display:block; overflow:auto; }
+    }
+    main:focus { outline:none; }
+  </style>
+  <link rel="stylesheet" href="/estatico/toastr.min.css">
+  <style>
+    #toast-container > div { opacity:1; box-shadow:none; border-radius:8px; background-repeat:no-repeat; background-position:15px center; }
+    #toast-container > .toast { font-family: Geist, "Segoe UI", sans-serif; }
+    #toast-container > .toast-success { background-color:#065F46; }
+    #toast-container > .toast-error { background-color:#7F1D1D; }
+    #toast-container > .toast-info { background-color:#155E75; }
+    #toast-container > .toast-warning { background-color:#92400E; }
+    .toast-message { white-space:pre-wrap; }
   </style>
 </head>
-<body>
-  <header><strong>PagaEu</strong>${nav}</header>
-  <main>
+<body class="${opcoes.autenticado ? 'app' : 'porta'}">
+  ${nav}
+  <main tabindex="-1">
     ${flash}
     ${opcoes.corpo}
   </main>
+  <script src="/estatico/jquery.min.js"></script>
+  <script src="/estatico/toastr.min.js"></script>
+  <script src="/estatico/painel.js"></script>
 </body>
 </html>`;
+}
+
+function etiqueta(texto: string, tipo: 'ok' | 'off' | 'aberta' | '' = ''): string {
+  return `<span class="tag ${tipo}">${e(texto)}</span>`;
+}
+
+function tagStatus(status: string): string {
+  const nome = NOMES_STATUS[status] ?? status;
+  if (status === 'paga') return etiqueta(nome, 'ok');
+  if (status === 'cancelada') return etiqueta(nome, 'off');
+  if (status === 'aberta') return etiqueta(nome, 'aberta');
+  return etiqueta(nome);
 }
 
 function indicador(nome: string, valor: CartaoPessoa['email']): string {
@@ -111,27 +221,90 @@ function csrf(token: string): string {
   return `<input type="hidden" name="csrf" value="${e(token)}">`;
 }
 
-export function paginaLogin(erro: string | null, etapaCodigo: boolean): string {
+function acoesDaCobranca(
+  id: string,
+  csrfToken: string,
+  opcoes: { copia: string | null; email: boolean; whatsapp: boolean },
+): string {
+  const copiar = opcoes.copia
+    ? `<button type="button" class="secundario" data-texto="${e(opcoes.copia)}">Copiar chave PIX</button>`
+    : '';
+  const reenvio = (canal: 'email' | 'whatsapp', rotulo: string) =>
+    `<form method="post" action="/cobrancas/${e(id)}/reenviar">${csrf(csrfToken)}
+      <input type="hidden" name="tipo" value="cobranca"><input type="hidden" name="canal" value="${canal}">
+      <button class="secundario" type="submit">${rotulo}</button></form>`;
+  const email = opcoes.email ? reenvio('email', 'Reenviar e-mail') : '';
+  const whatsapp = opcoes.whatsapp ? reenvio('whatsapp', 'Reenviar WhatsApp') : '';
+  if (!copiar && !email && !whatsapp) return '';
+  return `<div class="acoes">${copiar}${email}${whatsapp}</div>`;
+}
+
+export type RascunhoPessoa = {
+  nome: string;
+  whatsapp: string;
+  email: string;
+  cpf: string;
+  diaCobranca: string;
+  validadePixDias: string;
+  diasAviso: string;
+  canalEmail: boolean;
+  canalWhatsapp: boolean;
+};
+
+export type RascunhoMes = { mes: string; ano: string };
+
+export type RascunhoItem = {
+  id: string | null;
+  descricao: string;
+  valor: string;
+  inicioMes: string;
+  inicioAno: string;
+  fimMes: string;
+  fimAno: string;
+};
+
+export type RascunhoConfig = {
+  usuario: string;
+  emailDono: string;
+  smtpHost: string;
+  smtpPorta: string;
+  smtpUsuario: string;
+  smtpRemetenteNome: string;
+  smtpRemetenteEmail: string;
+  smtpCriptografia: string;
+};
+
+export type RascunhoTemplate = {
+  canal: string;
+  tipo: string;
+  assunto: string;
+  corpo: string;
+  destino: 'previa' | 'bloco';
+};
+
+export function paginaLogin(erro: string | null, etapaCodigo: boolean, valor = ''): string {
   const aviso = erro ? `<p class="alerta">${e(erro)}</p>` : '';
   if (etapaCodigo) {
     return `<h1>Código por e-mail</h1><p class="sub">Enviamos um código de 6 dígitos. Ele vale 10 minutos.</p>${aviso}
-      <form class="bloco" method="post" action="/login/codigo">
-        <label>Código<input name="codigo" inputmode="numeric" autocomplete="one-time-code" required></label>
+      <form method="post" action="/login/codigo">
+        <label>Código<input name="codigo" inputmode="numeric" autocomplete="one-time-code" required value="${e(valor)}"></label>
         <div class="acoes"><button type="submit">Entrar</button></div>
       </form>
-      <form method="post" action="/login/reenviar"><button class="secundario" type="submit">Reenviar código</button></form>`;
+      <form method="post" action="/login/reenviar"><div class="acoes"><button class="secundario" type="submit">Reenviar código</button></div></form>`;
   }
   return `<h1>Entrar</h1><p class="sub">Painel do dono.</p>${aviso}
-    <form class="bloco" method="post" action="/login">
-      <div class="row">
-        <label>Usuário<input name="usuario" autocomplete="username" required></label>
-        <label>Senha<input name="senha" type="password" autocomplete="current-password" required></label>
-      </div>
+    <form method="post" action="/login">
+      <label>Usuário<input name="usuario" autocomplete="username" required value="${e(valor)}"></label>
+      <label>Senha<input name="senha" type="password" autocomplete="current-password" required></label>
       <div class="acoes"><button type="submit">Continuar</button></div>
-    </form>`;
+    </form>
+    <p class="muted">O código de 6 dígitos chega no e-mail do dono.</p>`;
 }
 
-export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string, hoje: string): string {
+export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string, hoje: string, geracao: RascunhoMes | null = null): string {
+  const emAberto = cartoes.reduce((soma, cartao) => soma + (cartao.cobrancaId ? cartao.valorCentavos : 0), 0);
+  const ativas = cartoes.filter((cartao) => cartao.pessoa.ativa).length;
+  const alertas = cartoes.filter((cartao) => cartao.alertaItensPagos || cartao.excedente || cartao.divergencia).length;
   const lista = cartoes.map((cartao) => {
     const alertas = [
       cartao.alertaItensPagos ? `A vigente inclui itens já pagos por um PIX antigo${cartao.linhasAfetadas.length ? `: ${cartao.linhasAfetadas.join(', ')}` : ''}.` : '',
@@ -141,7 +314,7 @@ export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string, hoje:
     return `<article class="card">
       <div class="topo">
         <div><a href="/pessoas/${e(cartao.pessoa.id)}"><strong>${e(cartao.pessoa.nome)}</strong></a>
-          ${cartao.pessoa.ativa ? '' : '<span class="tag off">inativa</span>'}
+          ${cartao.pessoa.ativa ? etiqueta('Ativa', 'ok') : etiqueta('Inativa', 'off')}
           <div class="muted">Dia ${cartao.pessoa.dia_cobranca} · efetivo ${cartao.diaEfetivo}${cartao.pessoa.dia_cobranca_pendente ? ` · pendente ${cartao.pessoa.dia_cobranca_pendente} a partir de ${String(cartao.pessoa.dia_pendente_mes).padStart(2, '0')}/${cartao.pessoa.dia_pendente_ano}` : ''}</div>
         </div>
         <div class="dinheiro">${formatarReais(cartao.valorCentavos)}</div>
@@ -150,42 +323,70 @@ export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string, hoje:
       <div>${indicador('E-mail', cartao.email)}${indicador('WhatsApp', cartao.whatsapp)}</div>
       ${alertas.map((texto) => `<p class="alerta">${e(texto)}</p>`).join('')}
       ${cartao.cobrancaId ? `<a href="/cobrancas/${e(cartao.cobrancaId)}">Abrir cobrança</a>` : ''}
+      ${cartao.cobrancaId ? acoesDaCobranca(cartao.cobrancaId, csrfToken, { copia: cartao.copiaPix, email: cartao.podeEmail, whatsapp: cartao.podeWhatsapp }) : ''}
     </article>`;
   }).join('');
   return `<div class="topo"><div><h1>Quem deve</h1><p class="sub">Hoje, ${e(hoje)}. O valor é só o da cobrança vigente.</p></div>
     <a class="botao" href="/pessoas/nova">Nova pessoa</a></div>
+    <section class="metricas" aria-label="Resumo">
+      <article class="metrica"><span>Em aberto</span><strong class="ciano">${formatarReais(emAberto)}</strong></article>
+      <article class="metrica"><span>Pessoas ativas</span><strong class="ok">${ativas}</strong></article>
+      <article class="metrica"><span>Com alerta</span><strong class="amber">${alertas}</strong></article>
+    </section>
+    <section class="bloco">
+      <h2>Pagamentos no Mercado Pago</h2>
+      <p class="muted">Consulta o PIX das cobranças abertas. Se estava pendente e agora consta como pago, a cobrança é quitada e a confirmação é enviada.</p>
+      <form method="post" action="/cobrancas/consultar">${csrf(csrfToken)}
+        <div class="acoes"><button type="submit">Consultar cobranças abertas</button></div>
+      </form>
+    </section>
     <form class="bloco" method="post" action="/lote">
       ${csrf(csrfToken)}
       <h2>Gerar cobranças do mês</h2>
       <div class="row">
-        <label>Mês<input name="mes" type="number" min="1" max="12" required></label>
-        <label>Ano<input name="ano" type="number" min="2000" max="2100" required></label>
+        <label>Mês<input name="mes" type="number" min="1" max="12" required value="${e(geracao?.mes ?? '')}"></label>
+        <label>Ano<input name="ano" type="number" min="2000" max="2100" required value="${e(geracao?.ano ?? '')}"></label>
         <button type="submit">Gerar cobranças do mês</button>
       </div>
     </form>
     <div class="cards">${lista || '<p>Nenhuma pessoa cadastrada.</p>'}</div>`;
 }
 
-export function paginaPessoa(pessoa: Pessoa | null, efetivo: number | null, csrfToken: string, itensHref: string | null): string {
-  const valor = pessoa?.dia_cobranca_pendente ?? pessoa?.dia_cobranca ?? 10;
+export function paginaPessoa(
+  pessoa: Pessoa | null,
+  efetivo: number | null,
+  csrfToken: string,
+  itensHref: string | null,
+  rascunho: RascunhoPessoa | null = null,
+  geracao: RascunhoMes | null = null,
+): string {
+  const nome = rascunho?.nome ?? pessoa?.nome ?? '';
+  const whatsapp = rascunho?.whatsapp ?? pessoa?.whatsapp ?? '';
+  const email = rascunho?.email ?? pessoa?.email ?? '';
+  const cpf = rascunho?.cpf ?? pessoa?.cpf ?? '';
+  const dia = rascunho ? rascunho.diaCobranca : String(pessoa?.dia_cobranca_pendente ?? pessoa?.dia_cobranca ?? 10);
+  const validade = rascunho ? rascunho.validadePixDias : String(pessoa?.validade_pix_dias ?? 10);
+  const avisoDias = rascunho ? rascunho.diasAviso : String(pessoa?.dias_aviso_inadimplencia ?? 5);
+  const emailLigado = rascunho ? rascunho.canalEmail : !pessoa || pessoa.canal_email;
+  const whatsappLigado = rascunho ? rascunho.canalWhatsapp : !pessoa || pessoa.canal_whatsapp;
   return `<h1>${pessoa ? e(pessoa.nome) : 'Nova pessoa'}</h1>
     ${pessoa ? `<p class="sub">Dia efetivo deste mês: ${efetivo}.${pessoa.dia_cobranca_pendente ? ` Dia ${pessoa.dia_cobranca_pendente} vale a partir de ${String(pessoa.dia_pendente_mes).padStart(2, '0')}/${pessoa.dia_pendente_ano}.` : ''}</p>` : '<p class="sub">E-mail e WhatsApp começam ligados. O PIX vale 10 dias e o aviso sai 5 dias depois do vencimento.</p>'}
     <form class="bloco" method="post" action="${pessoa ? `/pessoas/${e(pessoa.id)}` : '/pessoas'}">
       ${csrf(csrfToken)}
       <div class="row">
-        <label>Nome<input name="nome" required maxlength="120" value="${e(pessoa?.nome ?? '')}"></label>
-        <label>WhatsApp<input name="whatsapp" required value="${e(pessoa?.whatsapp ?? '')}" placeholder="11999999999"></label>
-        <label>E-mail<input name="email" type="email" required value="${e(pessoa?.email ?? '')}"></label>
-        <label>CPF<input name="cpf" value="${e(pessoa?.cpf ?? '')}" placeholder="opcional"></label>
-        <label>Dia de cobrança<input name="dia_cobranca" type="number" min="1" max="31" required value="${valor}"></label>
-        <label>Validade do PIX (dias)<input name="validade_pix_dias" type="number" min="1" max="30" required value="${pessoa?.validade_pix_dias ?? 10}"></label>
-        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${pessoa?.dias_aviso_inadimplencia ?? 5}"></label>
+        <label>Nome<input name="nome" required maxlength="120" value="${e(nome)}"></label>
+        <label>WhatsApp<input name="whatsapp" required value="${e(whatsapp)}" placeholder="11999999999"></label>
+        <label>E-mail<input name="email" type="email" required value="${e(email)}"></label>
+        <label>CPF<input name="cpf" value="${e(cpf)}" placeholder="opcional"></label>
+        <label>Dia de cobrança<input name="dia_cobranca" type="number" min="1" max="31" required value="${e(dia)}"></label>
+        <label>Validade do PIX (dias)<input name="validade_pix_dias" type="number" min="1" max="30" required value="${e(validade)}"></label>
+        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}"></label>
       </div>
-      <p>
-        <label><input type="checkbox" name="canal_email" value="1" ${!pessoa || pessoa.canal_email ? 'checked' : ''}> E-mail</label>
-        <label><input type="checkbox" name="canal_whatsapp" value="1" ${!pessoa || pessoa.canal_whatsapp ? 'checked' : ''}> WhatsApp</label>
-      </p>
-      <button type="submit">Salvar</button>
+      <div class="checks">
+        <label><input type="checkbox" name="canal_email" value="1" ${emailLigado ? 'checked' : ''}> E-mail</label>
+        <label><input type="checkbox" name="canal_whatsapp" value="1" ${whatsappLigado ? 'checked' : ''}> WhatsApp</label>
+      </div>
+      <div class="acoes"><button type="submit">Salvar</button></div>
     </form>
     ${pessoa ? `<div class="acoes">
       <form method="post" action="/pessoas/${e(pessoa.id)}/ativa">${csrf(csrfToken)}<input type="hidden" name="ativa" value="${pessoa.ativa ? '0' : '1'}"><button class="secundario" type="submit">${pessoa.ativa ? 'Inativar' : 'Reativar'}</button></form>
@@ -196,60 +397,85 @@ export function paginaPessoa(pessoa: Pessoa | null, efetivo: number | null, csrf
       ${csrf(csrfToken)}
       <h2>Gerar cobrança</h2>
       <div class="row">
-        <label>Mês<input name="mes" type="number" min="1" max="12" required></label>
-        <label>Ano<input name="ano" type="number" min="2000" max="2100" required></label>
+        <label>Mês<input name="mes" type="number" min="1" max="12" required value="${e(geracao?.mes ?? '')}"></label>
+        <label>Ano<input name="ano" type="number" min="2000" max="2100" required value="${e(geracao?.ano ?? '')}"></label>
         <button type="submit">Gerar cobrança</button>
       </div>
     </form>` : ''}`;
 }
 
-export function paginaItens(pessoa: Pessoa, itens: Item[], usados: Set<string>, csrfToken: string): string {
-  const linhas = itens.map((item) => `<tr>
+function valoresItem(item: Item | null, rascunho: RascunhoItem | null, novo: boolean): RascunhoItem {
+  const deste = rascunho && (novo ? rascunho.id === null : rascunho.id === item?.id);
+  if (deste && rascunho) return rascunho;
+  if (!item) return { id: null, descricao: '', valor: '', inicioMes: '', inicioAno: '', fimMes: '', fimAno: '' };
+  return {
+    id: item.id,
+    descricao: item.descricao,
+    valor: formatarReais(item.valor_centavos).replace('R$ ', ''),
+    inicioMes: String(item.inicio_mes),
+    inicioAno: String(item.inicio_ano),
+    fimMes: item.fim_mes === null ? '' : String(item.fim_mes),
+    fimAno: item.fim_ano === null ? '' : String(item.fim_ano),
+  };
+}
+
+function fimExibido(mes: number | null, ano: number | null): string {
+  if (mes === null || ano === null) return '—';
+  return `${String(mes).padStart(2, '0')}/${ano}`;
+}
+
+export function paginaItens(pessoa: Pessoa, itens: Item[], usados: Set<string>, csrfToken: string, rascunho: RascunhoItem | null = null): string {
+  const linhas = itens.map((item) => {
+    const valores = valoresItem(item, rascunho, false);
+    return `<tr>
       <td>${e(item.descricao)}</td>
       <td class="dinheiro">${formatarReais(item.valor_centavos)}</td>
       <td>${String(item.inicio_mes).padStart(2, '0')}/${item.inicio_ano}</td>
-      <td>${String(item.fim_mes).padStart(2, '0')}/${item.fim_ano}</td>
+      <td>${fimExibido(item.fim_mes, item.fim_ano)}</td>
       <td>${usados.has(item.id) ? 'em cobrança' : `<form method="post" action="/itens/${e(item.id)}/excluir">${csrf(csrfToken)}<button class="secundario" type="submit">Excluir</button></form>`}</td>
     </tr>
     <tr><td colspan="5">
       <form method="post" action="/itens/${e(item.id)}">${csrf(csrfToken)}
         <div class="row">
           <input type="hidden" name="pessoa_id" value="${e(pessoa.id)}">
-          <label>Descrição<input name="descricao" maxlength="200" required value="${e(item.descricao)}"></label>
-          <label>Valor<input name="valor" required value="${e(formatarReais(item.valor_centavos).replace('R$ ', ''))}"></label>
-          <label>Início mês<input name="inicio_mes" type="number" min="1" max="12" value="${item.inicio_mes}"></label>
-          <label>Início ano<input name="inicio_ano" type="number" min="2000" max="2100" value="${item.inicio_ano}"></label>
-          <label>Fim mês<input name="fim_mes" type="number" min="1" max="12" value="${item.fim_mes}"></label>
-          <label>Fim ano<input name="fim_ano" type="number" min="2000" max="2100" value="${item.fim_ano}"></label>
+          <label>Descrição<input name="descricao" maxlength="200" required value="${e(valores.descricao)}"></label>
+          <label>Valor<input name="valor" required value="${e(valores.valor)}"></label>
+          <label>Início mês<input name="inicio_mes" type="number" min="1" max="12" value="${e(valores.inicioMes)}"></label>
+          <label>Início ano<input name="inicio_ano" type="number" min="2000" max="2100" value="${e(valores.inicioAno)}"></label>
+          <label>Fim mês<input name="fim_mes" type="number" min="1" max="12" placeholder="opcional" value="${e(valores.fimMes)}"></label>
+          <label>Fim ano<input name="fim_ano" type="number" min="2000" max="2100" placeholder="opcional" value="${e(valores.fimAno)}"></label>
           <button type="submit">Atualizar</button>
         </div>
       </form>
-    </td></tr>`).join('');
-  return `<h1>Itens de ${e(pessoa.nome)}</h1><p class="sub">Início e fim são obrigatórios. Início igual ao fim é cobrança única.</p>
+    </td></tr>`;
+  }).join('');
+  const novo = valoresItem(null, rascunho, true);
+  return `<h1>Itens de ${e(pessoa.nome)}</h1><p class="sub">O fim é opcional. Sem ele, o item continua em todo mês a partir do início. Início igual ao fim é cobrança única.</p>
     <form class="bloco" method="post" action="/pessoas/${e(pessoa.id)}/itens">${csrf(csrfToken)}
       <div class="row">
-        <label>Descrição<input name="descricao" maxlength="200" required></label>
-        <label>Valor<input name="valor" required placeholder="1.150,00"></label>
-        <label>Início mês<input name="inicio_mes" type="number" min="1" max="12" required></label>
-        <label>Início ano<input name="inicio_ano" type="number" min="2000" max="2100" required></label>
-        <label>Fim mês<input name="fim_mes" type="number" min="1" max="12" required></label>
-        <label>Fim ano<input name="fim_ano" type="number" min="2000" max="2100" required></label>
+        <label>Descrição<input name="descricao" maxlength="200" required value="${e(novo.descricao)}"></label>
+        <label>Valor<input name="valor" required placeholder="1.150,00" value="${e(novo.valor)}"></label>
+        <label>Início mês<input name="inicio_mes" type="number" min="1" max="12" required value="${e(novo.inicioMes)}"></label>
+        <label>Início ano<input name="inicio_ano" type="number" min="2000" max="2100" required value="${e(novo.inicioAno)}"></label>
+        <label>Fim mês<input name="fim_mes" type="number" min="1" max="12" placeholder="opcional" value="${e(novo.fimMes)}"></label>
+        <label>Fim ano<input name="fim_ano" type="number" min="2000" max="2100" placeholder="opcional" value="${e(novo.fimAno)}"></label>
         <button type="submit">Adicionar</button>
       </div>
     </form>
     <table><thead><tr><th>Descrição</th><th>Valor</th><th>Início</th><th>Fim</th><th></th></tr></thead><tbody>${linhas}</tbody></table>`;
 }
 
-export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], filtro: { pessoa?: string; status?: string; mes?: string; ano?: string }): string {
+export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], csrfToken: string, filtro: { pessoa?: string; status?: string; mes?: string; ano?: string }): string {
   const opcoes = pessoas.map((pessoa) => `<option value="${e(pessoa.id)}" ${filtro.pessoa === pessoa.id ? 'selected' : ''}>${e(pessoa.nome)}</option>`).join('');
   const corpo = linhas.map((linha) => `<tr>
       <td><a href="/cobrancas/${e(linha.id)}">${e(linha.pessoa)}</a></td>
       <td>${e(linha.competencia)}</td>
-      <td>${e(NOMES_STATUS[linha.status] ?? linha.status)}</td>
+      <td>${tagStatus(linha.status)}</td>
       <td>${linha.embutidaEm ? e(linha.embutidaEm) : '—'}</td>
       <td class="dinheiro">${formatarReais(linha.total)}</td>
       <td>${e(linha.origem)}</td>
       <td>${indicador('E-mail', linha.email)}${indicador('WhatsApp', linha.whatsapp)}</td>
+      <td>${acoesDaCobranca(linha.id, csrfToken, { copia: linha.copiaPix, email: linha.podeEmail, whatsapp: linha.podeWhatsapp })}</td>
     </tr>`).join('');
   return `<h1>Histórico de cobranças</h1><p class="sub">As canceladas ficam de fora até você filtrar por elas.</p>
     <form class="bloco" method="get" action="/cobrancas">
@@ -267,11 +493,11 @@ export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], fil
         <button type="submit">Filtrar</button>
       </div>
     </form>
-    <table><thead><tr><th>Pessoa</th><th>Competência</th><th>Status</th><th>Embutida em</th><th>Total</th><th>Origem</th><th>Cobrança</th></tr></thead>
-    <tbody>${corpo || '<tr><td colspan="7">Nenhuma cobrança.</td></tr>'}</tbody></table>`;
+    <table><thead><tr><th>Pessoa</th><th>Competência</th><th>Status</th><th>Embutida em</th><th>Total</th><th>Origem</th><th>Cobrança</th><th></th></tr></thead>
+    <tbody>${corpo || '<tr><td colspan="8">Nenhuma cobrança.</td></tr>'}</tbody></table>`;
 }
 
-export function paginaDetalhe(detalhe: Detalhe, csrfToken: string): string {
+export function paginaDetalhe(detalhe: Detalhe, csrfToken: string, motivo = ''): string {
   const linhas = detalhe.linhas.map((linha) => `<tr>
       <td>${e(linha.descricao)}</td><td>${e(linha.competencia)}</td>
       <td class="dinheiro">${formatarReais(linha.valorCentavos)}</td>
@@ -293,90 +519,112 @@ export function paginaDetalhe(detalhe: Detalhe, csrfToken: string): string {
     return `<div class="card"><strong>${e(NOMES_TIPO[item.tipo] ?? item.tipo)} · ${e(NOMES_CANAL[item.canal] ?? item.canal)}</strong>
       <div>${indicador(NOMES_CANAL[item.canal] ?? item.canal, item.indicador)}</div>
       ${item.tentativas.map((tentativa) => `<p class="muted">${e(formatarDataHora(tentativa.tentadoEm))} · ${e(tentativa.resultado)}${tentativa.motivo ? ` · ${e(tentativa.motivo)}` : ''}</p>`).join('')}
-      ${botao}</div>`;
+      ${botao ? `<div class="acoes">${botao}</div>` : ''}</div>`;
   }).join('');
   const eventos = detalhe.eventos.map((evento) => `<li>${e(evento.efeito)} · ${formatarReais(evento.valorCentavos)} · ${e(formatarDataHora(evento.recebidoEm))}</li>`).join('');
   const afetadas = detalhe.linhasAfetadas.map((linha) => `${linha.descricao} (${String(linha.mes).padStart(2, '0')}/${linha.ano})`).join(', ');
-  return `<h1>${e(detalhe.pessoa)} · ${e(detalhe.competencia)}</h1>
-    <p class="sub"><a href="/pessoas/${e(detalhe.pessoaId)}">${e(detalhe.pessoa)}</a> · ${e(NOMES_STATUS[detalhe.status] ?? detalhe.status)} · ${e(detalhe.origem)}${detalhe.pagaEm ? ` · paga em ${e(formatarDataHora(detalhe.pagaEm))} (${e(detalhe.origemBaixa)})` : ''}</p>
+  return `<p class="trilha"><a href="/cobrancas">Histórico</a> / ${e(detalhe.pessoa)}</p>
+    <div class="topo"><div><h1>${e(detalhe.pessoa)} · ${e(detalhe.competencia)}</h1>
+    <p class="sub"><a href="/pessoas/${e(detalhe.pessoaId)}">${e(detalhe.pessoa)}</a> · ${tagStatus(detalhe.status)} · ${e(detalhe.origem)}${detalhe.pagaEm ? ` · paga em ${e(formatarDataHora(detalhe.pagaEm))} (${e(detalhe.origemBaixa)})` : ''}</p></div>
+    <p class="dinheiro">Total ${formatarReais(detalhe.total)}</p></div>
+    <div class="ficha">
+    <div class="coluna">
     ${detalhe.alerta || afetadas ? `<p class="alerta">A vigente inclui itens já pagos por um PIX antigo${afetadas ? `: ${e(afetadas)}` : ''}.</p>` : ''}
     ${eventos ? `<ul>${eventos}</ul>` : ''}
     ${detalhe.motivoCancelamento ? `<p>Cancelada em ${e(detalhe.canceladaEm ? formatarDataHora(detalhe.canceladaEm) : '')}. Motivo: ${e(detalhe.motivoCancelamento)}</p>` : ''}
-    <table><thead><tr><th>Descrição</th><th>Origem</th><th>Valor</th><th></th></tr></thead><tbody>${linhas}</tbody></table>
-    <p class="dinheiro">Total ${formatarReais(detalhe.total)}</p>
-    ${detalhe.pixAtivo ? `<div class="bloco"><h2>PIX ativo</h2><p>Vence em ${e(formatarDataHora(detalhe.pixAtivo.venceEm))} · ${formatarReais(detalhe.pixAtivo.valorCentavos)}</p>
+    <div class="bloco"><table><thead><tr><th>Descrição</th><th>Origem</th><th>Valor</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>
+    ${detalhe.pixAtivo ? `<div class="bloco"><h2>PIX ativo</h2><p>Vence em ${e(formatarDataHora(detalhe.pixAtivo.venceEm))} · <span class="dinheiro">${formatarReais(detalhe.pixAtivo.valorCentavos)}</span></p>
       <textarea id="pix-copia" class="codigo" readonly>${e(detalhe.pixAtivo.copia)}</textarea>
-      <button type="button" data-copiar="pix-copia">Copiar</button></div>` : '<p>Sem PIX ativo.</p>'}
-    <h2>Histórico de PIX</h2>
-    <table><thead><tr><th>Valor</th><th>Status</th><th>Validade</th><th>Vencimento</th><th>Mercado Pago</th><th>Motivo</th></tr></thead><tbody>${pixes}</tbody></table>
-    <h2>Mensagens</h2><div class="cards">${indicadores}</div>
-    <div class="acoes">
-      ${detalhe.acoes.baixaManual ? `<form class="bloco" method="post" action="/cobrancas/${e(detalhe.id)}/baixa">${csrf(csrfToken)}
-        ${detalhe.pixAtivo ? `<p><label><input type="radio" name="pix" value="invalidar" checked> Invalidar o PIX</label>
-        <label><input type="radio" name="pix" value="manter"> Manter o PIX ativo</label></p>` : ''}
-        <button class="destaque" type="submit">Confirmar baixa</button></form>` : ''}
+      <div class="acoes"><button type="button" data-copiar="pix-copia">Copiar chave PIX</button></div></div>` : '<p>Sem PIX ativo.</p>'}
+    <div class="bloco"><h2>Histórico de PIX</h2>
+    <table><thead><tr><th>Valor</th><th>Status</th><th>Validade</th><th>Vencimento</th><th>Mercado Pago</th><th>Motivo</th></tr></thead><tbody>${pixes}</tbody></table></div>
+    </div>
+    <div class="lateral">
+    <section class="bloco"><h2>Mensagens</h2><div class="cards">${indicadores}</div></section>
+    <section class="bloco"><h2>Ações</h2>
+      ${acoesDaCobranca(detalhe.id, csrfToken, {
+        copia: detalhe.pixAtivo?.copia ?? null,
+        email: Boolean(detalhe.podeReenviar['cobranca:email']),
+        whatsapp: Boolean(detalhe.podeReenviar['cobranca:whatsapp']),
+      })}
+      ${detalhe.acoes.baixaManual ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/baixa">${csrf(csrfToken)}
+        ${detalhe.pixAtivo ? `<div class="checks"><label><input type="radio" name="pix" value="invalidar" checked> Invalidar o PIX</label>
+        <label><input type="radio" name="pix" value="manter"> Manter o PIX ativo</label></div>` : ''}
+        <div class="acoes"><button class="destaque" type="submit">Confirmar baixa</button></div></form>` : ''}
       ${detalhe.acoes.cancelar ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/cancelar">${csrf(csrfToken)}
-        <label>Motivo<input name="motivo" required maxlength="500"></label>
-        <button class="perigo" type="submit">Cancelar cobrança</button></form>` : ''}
+        <label>Motivo<input name="motivo" required maxlength="500" value="${e(motivo)}"></label>
+        <div class="acoes"><button class="perigo" type="submit">Cancelar cobrança</button></div></form>` : ''}
+      <div class="acoes">
       ${detalhe.acoes.novoPix ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/novo-pix">${csrf(csrfToken)}<button type="submit">Gerar novo PIX</button></form>` : ''}
       ${detalhe.acoes.invalidarPix ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/invalidar-pix">${csrf(csrfToken)}<button class="secundario" type="submit">Invalidar PIX</button></form>` : ''}
       ${detalhe.acoes.tentarEmissao ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/tentar-emissao">${csrf(csrfToken)}<button type="submit">Tentar emissão de novo</button></form>` : ''}
+      </div>
+    </section>
     </div>
-    <script>
-      document.querySelectorAll('[data-copiar]').forEach((botao) => {
-        botao.addEventListener('click', async () => {
-          const alvo = document.getElementById(botao.getAttribute('data-copiar'));
-          if (!alvo) return;
-          await navigator.clipboard.writeText(alvo.value || alvo.textContent || '');
-          botao.textContent = 'Copiado';
-        });
-      });
-    </script>`;
+    </div>`;
 }
 
-export function paginaTemplates(modelos: TemplateLinha[], csrfToken: string, previsao: { titulo: string; assunto: string; corpo: string } | null): string {
+export function paginaTemplates(
+  modelos: TemplateLinha[],
+  csrfToken: string,
+  previsao: { titulo: string; assunto: string; corpo: string } | null,
+  rascunho: RascunhoTemplate | null = null,
+): string {
   const blocos = modelos.map((modelo) => {
     const tipo = modelo.tipo as TipoMensagem;
-    return `<form class="bloco" method="post" action="/templates/${e(modelo.canal)}/${e(modelo.tipo)}">
-      ${csrf(csrfToken)}
-      <h2>${e(NOMES_CANAL[modelo.canal] ?? modelo.canal)} · ${e(NOMES_TIPO[modelo.tipo] ?? modelo.tipo)}</h2>
-      <p class="muted">Variáveis: ${e(variaveisDoCenario(tipo).map((nome) => `{${nome}}`).join(', '))}</p>
-      ${modelo.canal === 'email' ? `<label>Assunto<input name="assunto" value="${e(modelo.assunto ?? '')}"></label>` : ''}
-      <label>Texto<textarea name="corpo">${e(modelo.corpo)}</textarea></label>
-      <div class="acoes"><button type="submit">Salvar</button></div>
-    </form>
-    <form method="post" action="/templates/${e(modelo.canal)}/${e(modelo.tipo)}/prever">${csrf(csrfToken)}
-      <input type="hidden" name="assunto" value="${e(modelo.assunto ?? '')}">
-      <input type="hidden" name="corpo_atual" value="1">
-      <button class="secundario" type="submit" formaction="/templates/${e(modelo.canal)}/${e(modelo.tipo)}/restaurar">Restaurar padrão</button>
-    </form>`;
+    const editando = rascunho?.destino === 'bloco' && rascunho.canal === modelo.canal && rascunho.tipo === modelo.tipo;
+    const assunto = editando && rascunho ? rascunho.assunto : (modelo.assunto ?? '');
+    const corpo = editando && rascunho ? rascunho.corpo : modelo.corpo;
+    return `<section class="bloco">
+      <form method="post" action="/templates/${e(modelo.canal)}/${e(modelo.tipo)}">
+        ${csrf(csrfToken)}
+        <h2>${e(NOMES_CANAL[modelo.canal] ?? modelo.canal)} · ${e(NOMES_TIPO[modelo.tipo] ?? modelo.tipo)}</h2>
+        <p class="muted">Variáveis: ${e(variaveisDoCenario(tipo).map((nome) => `{${nome}}`).join(', '))}</p>
+        ${modelo.canal === 'email' ? `<label>Assunto<input name="assunto" value="${e(assunto)}"></label>` : ''}
+        <label>Texto<textarea name="corpo">${e(corpo)}</textarea></label>
+        <div class="acoes"><button type="submit">Salvar</button></div>
+      </form>
+      <form method="post" action="/templates/${e(modelo.canal)}/${e(modelo.tipo)}/prever">${csrf(csrfToken)}
+        <input type="hidden" name="assunto" value="${e(modelo.assunto ?? '')}">
+        <input type="hidden" name="corpo_atual" value="1">
+        <div class="acoes"><button class="secundario" type="submit" formaction="/templates/${e(modelo.canal)}/${e(modelo.tipo)}/restaurar">Restaurar padrão</button></div>
+      </form>
+    </section>`;
   }).join('');
   const previa = previsao
     ? `<section class="bloco"><h2>Pré-visualização · ${e(previsao.titulo)}</h2><p class="muted">Dados fictícios, de ninguém cadastrado.</p>
       ${previsao.assunto ? `<p><strong>${e(previsao.assunto)}</strong></p>` : ''}<pre>${e(previsao.corpo)}</pre></section>`
     : '';
+  const previaRascunho = rascunho?.destino === 'previa' ? rascunho : null;
+  const opcao = (valor: string, rotulo: string, atual: string | undefined) =>
+    `<option value="${valor}" ${atual === valor ? 'selected' : ''}>${rotulo}</option>`;
   return `<h1>Templates</h1><p class="sub">Seis textos: e-mail e WhatsApp para cobrança, confirmação e inadimplência.</p>
     ${previa}
     <form class="bloco" method="post" action="/templates/prever">${csrf(csrfToken)}
       <h2>Pré-visualizar um rascunho</h2>
       <div class="row">
-        <label>Canal<select name="canal"><option value="whatsapp">WhatsApp</option><option value="email">E-mail</option></select></label>
-        <label>Cenário<select name="tipo"><option value="cobranca">Cobrança</option><option value="confirmacao">Confirmação</option><option value="inadimplencia">Inadimplência</option></select></label>
+        <label>Canal<select name="canal">${opcao('whatsapp', 'WhatsApp', previaRascunho?.canal)}${opcao('email', 'E-mail', previaRascunho?.canal)}</select></label>
+        <label>Cenário<select name="tipo">${opcao('cobranca', 'Cobrança', previaRascunho?.tipo)}${opcao('confirmacao', 'Confirmação', previaRascunho?.tipo)}${opcao('inadimplencia', 'Inadimplência', previaRascunho?.tipo)}</select></label>
       </div>
-      <label>Assunto<input name="assunto"></label>
-      <label>Texto<textarea name="corpo"></textarea></label>
-      <button type="submit">Pré-visualizar</button>
+      <label>Assunto<input name="assunto" value="${e(previaRascunho?.assunto ?? '')}"></label>
+      <label>Texto<textarea name="corpo">${e(previaRascunho?.corpo ?? '')}</textarea></label>
+      <div class="acoes"><button type="submit">Pré-visualizar</button></div>
     </form>
     ${blocos}`;
 }
 
-export function paginaConfiguracao(config: ConfigPublica, csrfToken: string): string {
+export function paginaConfiguracao(config: ConfigPublica, csrfToken: string, rascunho: RascunhoConfig | null = null): string {
+  const vista = rascunho
+    ? { ...config, usuario: rascunho.usuario, emailDono: rascunho.emailDono, smtpHost: rascunho.smtpHost, smtpPorta: rascunho.smtpPorta, smtpUsuario: rascunho.smtpUsuario, smtpRemetenteNome: rascunho.smtpRemetenteNome, smtpRemetenteEmail: rascunho.smtpRemetenteEmail, smtpCriptografia: rascunho.smtpCriptografia }
+    : config;
+  config = vista;
   const teste = config.evolution.ultimoTesteEm
     ? `${config.evolution.ultimoTesteOk ? 'Conexão encontrada' : 'Falhou'} em ${formatarDataHora(config.evolution.ultimoTesteEm)}. ${config.evolution.ultimoTesteMotivo ?? ''}`
     : 'Ainda não testada.';
   return `<h1>Configuração</h1>
     <p class="sub">Segredo gravado não volta para a tela. Campo em branco mantém o valor atual.</p>
     <form class="bloco" method="post" action="/configuracao">${csrf(csrfToken)}
+      <h2>Acesso</h2>
       <div class="row">
         <label>Usuário<input name="usuario" required value="${e(config.usuario)}"></label>
         <label>E-mail do código<input name="email_dono" type="email" required value="${e(config.emailDono)}"></label>
@@ -384,14 +632,14 @@ export function paginaConfiguracao(config: ConfigPublica, csrfToken: string): st
         <label>Senha nova<input name="senha_nova" type="password" autocomplete="new-password"></label>
       </div>
       <h2>Mercado Pago</h2>
-      <p>Token: ${config.mpAccessTokenDefinido ? 'definido: sim' : 'definido: não'}. Segredo do webhook: ${config.mpWebhookSecretDefinido ? 'definido: sim' : 'definido: não'}.</p>
+      <p>Token: ${config.mpAccessTokenDefinido ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}. Segredo do webhook: ${config.mpWebhookSecretDefinido ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}.</p>
       <p>URL de notificação: <span class="codigo">${e(config.urlNotificacao || 'defina PAGAEU_PUBLIC_URL')}</span></p>
       <div class="row">
         <label>Access token<input name="mp_access_token" type="password" autocomplete="off"></label>
         <label>Segredo do webhook<input name="mp_webhook_secret" type="password" autocomplete="off"></label>
       </div>
       <h2>SMTP</h2>
-      <p>Senha: ${config.smtpSenhaDefinida ? 'definido: sim' : 'definido: não'}.</p>
+      <p>Senha: ${config.smtpSenhaDefinida ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}.</p>
       <div class="row">
         <label>Host<input name="smtp_host" value="${e(config.smtpHost)}"></label>
         <label>Porta<input name="smtp_porta" value="${e(config.smtpPorta)}" placeholder="587"></label>
@@ -412,8 +660,8 @@ export function paginaConfiguracao(config: ConfigPublica, csrfToken: string): st
       <p>Somente leitura, vindo do ambiente.</p>
       <p>URL: ${e(config.evolution.url || 'não definida')}</p>
       <p>Instância: ${e(config.evolution.instancia || 'não definida')}</p>
-      <p>Chave global: ${config.evolution.chaveDefinida ? 'definido: sim' : 'definido: não'}</p>
+      <p>Chave global: ${config.evolution.chaveDefinida ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}</p>
       <p>${e(teste)}</p>
-      <form method="post" action="/configuracao/evolution">${csrf(csrfToken)}<button type="submit">Testar conexão</button></form>
+      <form class="acoes" method="post" action="/configuracao/evolution">${csrf(csrfToken)}<button type="submit">Testar conexão</button></form>
     </section>`;
 }

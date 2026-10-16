@@ -29,8 +29,8 @@ export type Item = {
   valor_centavos: number;
   inicio_ano: number;
   inicio_mes: number;
-  fim_ano: number;
-  fim_mes: number;
+  fim_ano: number | null;
+  fim_mes: number | null;
 };
 
 export type EntradaPessoa = {
@@ -180,34 +180,27 @@ export async function definirAtiva(app: App, id: string, ativa: boolean): Promis
   return { ok: true };
 }
 
+function periodoValido(ano: number | null, mes: number | null): boolean {
+  return Number.isInteger(ano) && Number.isInteger(mes) && mes !== null && mes >= 1 && mes <= 12 && ano !== null && ano >= 2000 && ano <= 2100;
+}
+
 function validarItem(entrada: {
   descricao: string;
   valorCentavos: number | null;
   inicioAno: number;
   inicioMes: number;
-  fimAno: number;
-  fimMes: number;
+  fimAno: number | null;
+  fimMes: number | null;
 }): string | null {
   const descricao = entrada.descricao.trim();
   if (descricao.length < 1 || descricao.length > 200) return 'A descrição precisa ter de 1 a 200 caracteres.';
-  if (
-    !Number.isInteger(entrada.inicioAno) ||
-    !Number.isInteger(entrada.fimAno) ||
-    !Number.isInteger(entrada.inicioMes) ||
-    !Number.isInteger(entrada.fimMes) ||
-    entrada.inicioMes < 1 ||
-    entrada.inicioMes > 12 ||
-    entrada.fimMes < 1 ||
-    entrada.fimMes > 12 ||
-    entrada.inicioAno < 2000 ||
-    entrada.fimAno > 2100 ||
-    entrada.fimAno < 2000 ||
-    entrada.inicioAno > 2100
-  ) {
-    return 'Informe o mês e o ano de início e de fim.';
-  }
-  if (entrada.inicioAno > entrada.fimAno || (entrada.inicioAno === entrada.fimAno && entrada.inicioMes > entrada.fimMes)) {
-    return 'O início não pode ser posterior ao fim.';
+  if (!periodoValido(entrada.inicioAno, entrada.inicioMes)) return 'Informe o mês e o ano de início.';
+  const semFim = entrada.fimAno === null && entrada.fimMes === null;
+  if (!semFim) {
+    if (!periodoValido(entrada.fimAno, entrada.fimMes)) return 'Informe o mês e o ano de fim juntos, ou deixe os dois em branco.';
+    if (entrada.inicioAno > entrada.fimAno! || (entrada.inicioAno === entrada.fimAno && entrada.inicioMes > entrada.fimMes!)) {
+      return 'O início não pode ser posterior ao fim.';
+    }
   }
   if (entrada.valorCentavos === null) return 'Informe um valor entre R$ 0,01 e R$ 999.999,99.';
   return null;
@@ -226,8 +219,8 @@ export async function salvarItem(
     valorCentavos: number | null;
     inicioAno: number;
     inicioMes: number;
-    fimAno: number;
-    fimMes: number;
+    fimAno: number | null;
+    fimMes: number | null;
   },
 ): Promise<{ ok: true; id: string } | { ok: false; aviso: string }> {
   const pessoa = await obterPessoa(app, pessoaId);

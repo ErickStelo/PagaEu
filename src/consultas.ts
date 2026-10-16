@@ -14,6 +14,9 @@ export type CartaoPessoa = {
   valorCentavos: number;
   cobrancaId: string | null;
   pixTexto: string;
+  copiaPix: string | null;
+  podeEmail: boolean;
+  podeWhatsapp: boolean;
   email: Indicador;
   whatsapp: Indicador;
   alertaItensPagos: boolean;
@@ -39,9 +42,9 @@ export async function montarPainel(app: App, agora = app.clock()): Promise<Carta
       : [];
     const afetadas = vigente ? await linhasAfetadas(app, vigente.id) : [];
     const pix = vigente
-      ? await consultar<{ status_local: StatusPix; vence_em: Date }>(
+      ? await consultar<{ status_local: StatusPix; vence_em: Date; copia_e_cola: string | null }>(
           app.pool,
-          `SELECT status_local, vence_em FROM pix
+          `SELECT status_local, vence_em, copia_e_cola FROM pix
            WHERE cobranca_id = $1 AND status_local IN ('pendente', 'falha_cancelamento')
            ORDER BY criado_em DESC LIMIT 1`,
           [vigente.id],
@@ -82,6 +85,9 @@ export async function montarPainel(app: App, agora = app.clock()): Promise<Carta
       valorCentavos: linhas.reduce((soma, linha) => soma + linha.valor_centavos, 0),
       cobrancaId: vigente?.id ?? null,
       pixTexto,
+      copiaPix: ativo?.copia_e_cola ?? null,
+      podeEmail: Boolean(ativo?.copia_e_cola && vigente?.status === 'aberta' && vigente.canal_email_selecionado),
+      podeWhatsapp: Boolean(ativo?.copia_e_cola && vigente?.status === 'aberta' && vigente.canal_whatsapp_selecionado),
       email: indicador('email'),
       whatsapp: indicador('whatsapp'),
       alertaItensPagos: Boolean(vigente?.alerta_itens_ja_pagos) || afetadas.length > 0,
@@ -153,6 +159,9 @@ export type LinhaHistorico = {
   origem: string;
   email: Indicador;
   whatsapp: Indicador;
+  copiaPix: string | null;
+  podeEmail: boolean;
+  podeWhatsapp: boolean;
 };
 
 export async function listarHistorico(
@@ -183,16 +192,29 @@ export async function listarHistorico(
     competencia_mes: number;
     status: StatusCobranca;
     origem_geracao: string;
+    canal_email_selecionado: boolean;
+    canal_whatsapp_selecionado: boolean;
+    copia_e_cola: string | null;
     total: number;
     embutida_ano: number | null;
     embutida_mes: number | null;
   }>(
     app.pool,
     `SELECT c.id, c.pessoa_id, p.nome, c.competencia_ano, c.competencia_mes, c.status, c.origem_geracao,
+            c.canal_email_selecionado, c.canal_whatsapp_selecionado,
             COALESCE((SELECT SUM(valor_centavos) FROM linha_cobranca l WHERE l.cobranca_id = c.id), 0)::int AS total,
-            emb.competencia_ano AS embutida_ano, emb.competencia_mes AS embutida_mes
+            emb.competencia_ano AS embutida_ano, emb.competencia_mes AS embutida_mes,
+            pix.copia_e_cola
      FROM cobranca c
      JOIN pessoa p ON p.id = c.pessoa_id
+     LEFT JOIN LATERAL (
+       SELECT copia_e_cola FROM pix
+       WHERE pix.cobranca_id = c.id
+         AND pix.status_local IN ('pendente', 'falha_cancelamento')
+         AND pix.copia_e_cola IS NOT NULL
+       ORDER BY pix.criado_em DESC
+       LIMIT 1
+     ) pix ON true
      LEFT JOIN LATERAL (
        SELECT competencia_ano, competencia_mes FROM cobranca posterior
        WHERE posterior.anterior_id = c.id AND posterior.status IN ('aberta', 'paga')
@@ -231,6 +253,9 @@ export async function listarHistorico(
       origem: origemNome[linha.origem_geracao] ?? linha.origem_geracao,
       email: indicador('email'),
       whatsapp: indicador('whatsapp'),
+      copiaPix: linha.copia_e_cola,
+      podeEmail: Boolean(linha.copia_e_cola && linha.status === 'aberta' && linha.canal_email_selecionado),
+      podeWhatsapp: Boolean(linha.copia_e_cola && linha.status === 'aberta' && linha.canal_whatsapp_selecionado),
     };
   });
 }

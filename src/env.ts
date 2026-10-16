@@ -37,3 +37,14 @@ export function lerEnv(origem: NodeJS.ProcessEnv = process.env): Env {
 export function urlNotificacao(urlPublica: string): string {
   return `${urlPublica.replace(/\/+$/, '')}/webhooks/mercadopago?source_news=webhooks`;
 }
+
+export function urlNotificacaoEnviavel(urlPublica: string): string {
+  if (!urlPublica) return '';
+  try {
+    const host = new URL(urlPublica).hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') return '';
+    return urlNotificacao(urlPublica);
+  } catch {
+    return '';
+  }
+}

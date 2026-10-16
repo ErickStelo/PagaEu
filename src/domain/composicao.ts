@@ -13,15 +13,16 @@ export type ItemComposicao = {
   valorCentavos: number;
   inicioAno: number;
   inicioMes: number;
-  fimAno: number;
-  fimMes: number;
+  fimAno: number | null;
+  fimMes: number | null;
 };
 
 export function itemCobreCompetencia(item: ItemComposicao, ano: number, mes: number): boolean {
   const inicio = item.inicioAno * 12 + item.inicioMes;
-  const fim = item.fimAno * 12 + item.fimMes;
   const competencia = ano * 12 + mes;
-  return inicio <= competencia && competencia <= fim;
+  if (competencia < inicio) return false;
+  if (item.fimAno === null || item.fimMes === null) return true;
+  return competencia <= item.fimAno * 12 + item.fimMes;
 }
 
 function chaveLinha(itemId: string, ano: number, mes: number): string {

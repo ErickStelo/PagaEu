@@ -233,8 +233,13 @@ export class SessaoHttp {
     this.base = base;
   }
 
-  async pedir(metodo: string, caminho: string, formulario?: Record<string, string>): Promise<{ status: number; texto: string; location: string | null }> {
-    const headers: Record<string, string> = {};
+  async pedir(
+    metodo: string,
+    caminho: string,
+    formulario?: Record<string, string>,
+    extras?: Record<string, string>,
+  ): Promise<{ status: number; texto: string; location: string | null }> {
+    const headers: Record<string, string> = { ...extras };
     if (this.cookies.size) {
       headers.cookie = [...this.cookies].map(([nome, valor]) => `${nome}=${encodeURIComponent(valor)}`).join('; ');
     }

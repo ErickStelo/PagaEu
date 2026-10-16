@@ -1,5 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { App } from './app.ts';
 import {
   confirmarCodigo,
@@ -16,11 +19,13 @@ import { detalharCobranca, listarHistorico, montarPainel } from './consultas.ts'
 import {
   baixaManual,
   cancelarCobranca,
+  consultarCobrancasAbertas,
   gerarCobranca,
   gerarLote,
   gerarNovoPix,
   invalidarPix,
   tentarEmissao,
+  type ResultadoConsultaAbertas,
   type ResultadoLote,
 } from './cobrancas.ts';
 import { diaEfetivo, formatarDataHora, partesNoFuso } from './domain/calendar.ts';
@@ -58,10 +63,37 @@ import {
   paginaPessoa,
   paginaQuemDeve,
   paginaTemplates,
+  type RascunhoItem,
 } from './paginas.ts';
 import { receberWebhook } from './webhook.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const pastaEstatica = join(dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const tiposEstaticos: Record<string, string> = {
+  'jquery.min.js': 'text/javascript; charset=utf-8',
+  'toastr.min.js': 'text/javascript; charset=utf-8',
+  'toastr.min.css': 'text/css; charset=utf-8',
+  'painel.js': 'text/javascript; charset=utf-8',
+};
+const cacheEstatico = new Map<string, Buffer>();
+
+function servirEstatico(res: ServerResponse, caminho: string, metodo: string): boolean {
+  const nome = caminho.slice('/estatico/'.length);
+  const tipo = tiposEstaticos[nome];
+  if (!tipo) return false;
+  let corpo = nome === 'painel.js' ? undefined : cacheEstatico.get(nome);
+  if (!corpo) {
+    corpo = readFileSync(join(pastaEstatica, nome));
+    if (nome !== 'painel.js') cacheEstatico.set(nome, corpo);
+  }
+  res.statusCode = 200;
+  res.setHeader('Content-Type', tipo);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'no-cache');
+  if (metodo === 'HEAD') res.end();
+  else res.end(corpo);
+  return true;
+}
 
 type Ctx = {
   app: App;
@@ -130,17 +162,46 @@ function aplicarCookies(ctx: Ctx): void {
   if (ctx.cookies.length) ctx.res.setHeader('Set-Cookie', ctx.cookies);
 }
 
+function pedidoAjax(ctx: Ctx): boolean {
+  return ctx.req.headers['x-pagaeu'] === '1';
+}
+
+function json(ctx: Ctx, status: number, corpo: Record<string, unknown>): void {
+  if (ctx.sessao) definirCookie(ctx, 'pagaeu_sessao', ctx.sessao.id, 12 * 60 * 60);
+  aplicarCookies(ctx);
+  ctx.res.statusCode = status;
+  ctx.res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  ctx.res.setHeader('X-Content-Type-Options', 'nosniff');
+  ctx.res.setHeader('Referrer-Policy', 'same-origin');
+  ctx.res.end(JSON.stringify(corpo));
+}
+
 function html(ctx: Ctx, status: number, titulo: string, corpo: string, flash: Flash | null): void {
+  if (pedidoAjax(ctx)) {
+    if (status >= 400) {
+      json(ctx, status, {
+        ok: false,
+        aviso: flash?.texto || (status === 403 ? 'Ação recusada.' : 'Não foi possível concluir.'),
+      });
+      return;
+    }
+    json(ctx, status, { ok: flash?.tipo !== 'erro', aviso: flash?.texto ?? '', html: corpo, titulo });
+    return;
+  }
   if (ctx.sessao) definirCookie(ctx, 'pagaeu_sessao', ctx.sessao.id, 12 * 60 * 60);
   aplicarCookies(ctx);
   ctx.res.statusCode = status;
   ctx.res.setHeader('Content-Type', 'text/html; charset=utf-8');
   ctx.res.setHeader('X-Content-Type-Options', 'nosniff');
   ctx.res.setHeader('Referrer-Policy', 'same-origin');
-  ctx.res.end(layout({ titulo, corpo, autenticado: Boolean(ctx.sessao), flash }));
+  ctx.res.end(layout({ titulo, corpo, autenticado: Boolean(ctx.sessao), flash, caminho: ctx.url.pathname }));
 }
 
 function redirecionar(ctx: Ctx, local: string): void {
+  if (pedidoAjax(ctx)) {
+    json(ctx, 200, { ok: true, aviso: '', ir: local, recarregar: true });
+    return;
+  }
   if (ctx.sessao) definirCookie(ctx, 'pagaeu_sessao', ctx.sessao.id, 12 * 60 * 60);
   aplicarCookies(ctx);
   ctx.res.statusCode = 303;
@@ -149,6 +210,10 @@ function redirecionar(ctx: Ctx, local: string): void {
 }
 
 async function flashERedireciona(ctx: Ctx, local: string, flash: Flash): Promise<void> {
+  if (pedidoAjax(ctx)) {
+    json(ctx, flash.tipo === 'ok' ? 200 : 422, { ok: flash.tipo === 'ok', aviso: flash.texto, ir: local });
+    return;
+  }
   if (ctx.sessao) await definirFlash(ctx.app, ctx.sessao.id, flash);
   redirecionar(ctx, local);
 }
@@ -167,8 +232,31 @@ function inteiro(valor: string | null): number {
   return Number(valor.trim());
 }
 
+function inteiroOpcional(valor: string | null): number | null {
+  if (!valor || !valor.trim()) return null;
+  return inteiro(valor);
+}
+
 function marcado(form: URLSearchParams, nome: string): boolean {
   return form.get(nome) === '1';
+}
+
+function contar(quantidade: number, um: string, varios: string): string {
+  return quantidade === 1 ? `1 ${um}` : `${quantidade} ${varios}`;
+}
+
+function textoConsulta(resultado: ResultadoConsultaAbertas): string {
+  if (resultado.consultadas === 0 && resultado.falhas.length === 0) return 'Nenhuma cobrança aberta com PIX pendente.';
+  const linhas = [contar(resultado.consultadas, 'cobrança consultada.', 'cobranças consultadas.')];
+  linhas.push(
+    resultado.pagas === 0
+      ? 'Nenhuma passou a constar como paga.'
+      : contar(resultado.pagas, 'passou a constar como paga.', 'passaram a constar como pagas.'),
+  );
+  if (resultado.confirmacoes) linhas.push(contar(resultado.confirmacoes, 'confirmação de pagamento enviada.', 'confirmações de pagamento enviadas.'));
+  if (resultado.semCanal) linhas.push(contar(resultado.semCanal, 'quitada sem canal de confirmação ligado.', 'quitadas sem canal de confirmação ligado.'));
+  linhas.push(...resultado.falhas);
+  return linhas.join('\n');
 }
 
 function textoLote(resultado: ResultadoLote): string {
@@ -221,7 +309,10 @@ rota('GET', '/login', async (ctx) => {
 
 rota('POST', '/login', async (ctx) => {
   const resultado = await entrarComSenha(ctx.app, ctx.form.get('usuario') ?? '', ctx.form.get('senha') ?? '');
-  if (!resultado.ok) return html(ctx, 401, 'Entrar', paginaLogin(resultado.aviso, false), null);
+  if (!resultado.ok) {
+    if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: resultado.aviso });
+    return html(ctx, 401, 'Entrar', paginaLogin(resultado.aviso, false, ctx.form.get('usuario') ?? ''), null);
+  }
   if ('sessaoId' in resultado) {
     limparCookie(ctx, 'pagaeu_codigo');
     definirCookie(ctx, 'pagaeu_sessao', resultado.sessaoId, 12 * 60 * 60);
@@ -234,9 +325,15 @@ rota('POST', '/login', async (ctx) => {
 
 rota('POST', '/login/codigo', async (ctx) => {
   const codigoId = lerCookies(ctx.req).get('pagaeu_codigo');
-  if (!codigoId) return html(ctx, 401, 'Entrar', paginaLogin('Entre novamente com usuário e senha.', false), null);
+  if (!codigoId) {
+    if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: 'Entre novamente com usuário e senha.', recarregar: true, ir: '/login' });
+    return html(ctx, 401, 'Entrar', paginaLogin('Entre novamente com usuário e senha.', false), null);
+  }
   const resultado = await confirmarCodigo(ctx.app, codigoId, ctx.form.get('codigo') ?? '');
-  if (!resultado.ok) return html(ctx, 401, 'Código', paginaLogin(resultado.aviso, true), null);
+  if (!resultado.ok) {
+    if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: resultado.aviso });
+    return html(ctx, 401, 'Código', paginaLogin(resultado.aviso, true, ctx.form.get('codigo') ?? ''), null);
+  }
   limparCookie(ctx, 'pagaeu_codigo');
   definirCookie(ctx, 'pagaeu_sessao', resultado.sessaoId, 12 * 60 * 60);
   ctx.sessao = await lerSessao(ctx.app, resultado.sessaoId);
@@ -245,11 +342,17 @@ rota('POST', '/login/codigo', async (ctx) => {
 
 rota('POST', '/login/reenviar', async (ctx) => {
   const codigoId = lerCookies(ctx.req).get('pagaeu_codigo');
-  if (!codigoId) return html(ctx, 401, 'Entrar', paginaLogin('Entre novamente com usuário e senha.', false), null);
+  if (!codigoId) {
+    if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: 'Entre novamente com usuário e senha.', recarregar: true, ir: '/login' });
+    return html(ctx, 401, 'Entrar', paginaLogin('Entre novamente com usuário e senha.', false), null);
+  }
   const resultado = await reenviarCodigo(ctx.app, codigoId);
-  if (!resultado.ok) return html(ctx, 200, 'Código', paginaLogin(resultado.aviso, true), null);
+  if (!resultado.ok) {
+    if (pedidoAjax(ctx)) return json(ctx, 422, { ok: false, aviso: resultado.aviso });
+    return html(ctx, 200, 'Código', paginaLogin(resultado.aviso, true), null);
+  }
   definirCookie(ctx, 'pagaeu_codigo', resultado.codigoId, 30 * 60);
-  html(ctx, 200, 'Código', paginaLogin('Enviamos outro código.', true), null);
+  html(ctx, 200, 'Código', paginaLogin(null, true), { tipo: 'ok', texto: 'Enviamos outro código.' });
 });
 
 rota('POST', '/sair', async (ctx) => {
@@ -271,10 +374,25 @@ rota('GET', '/', async (ctx) => {
   html(ctx, 200, 'Quem deve', corpo, flash);
 });
 
+rota('POST', '/cobrancas/consultar', async (ctx) => {
+  if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
+  const resultado = await consultarCobrancasAbertas(ctx.app);
+  await flashERedireciona(ctx, '/', { tipo: resultado.falhas.length ? 'erro' : 'ok', texto: textoConsulta(resultado) });
+});
+
 rota('POST', '/lote', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const resultado = await gerarLote(ctx.app, inteiro(ctx.form.get('ano')), inteiro(ctx.form.get('mes')));
-  await flashERedireciona(ctx, '/', { tipo: resultado.recusado ? 'erro' : 'ok', texto: textoLote(resultado) });
+  if (resultado.recusado) {
+    return html(
+      ctx,
+      422,
+      'Quem deve',
+      paginaQuemDeve(await montarPainel(ctx.app), ctx.sessao.csrf, dataHoje(ctx), rascunhoMes(ctx)),
+      { tipo: 'erro', texto: textoLote(resultado) },
+    );
+  }
+  await flashERedireciona(ctx, '/', { tipo: 'ok', texto: textoLote(resultado) });
 });
 
 rota('GET', '/pessoas/nova', async (ctx) => {
@@ -285,7 +403,12 @@ rota('GET', '/pessoas/nova', async (ctx) => {
 rota('POST', '/pessoas', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const criada = await criarPessoa(ctx.app, entradaPessoa(ctx));
-  if (!criada.ok) return flashERedireciona(ctx, '/pessoas/nova', { tipo: 'erro', texto: criada.aviso });
+  if (!criada.ok) {
+    return html(ctx, 422, 'Nova pessoa', paginaPessoa(null, null, ctx.sessao.csrf, null, rascunhoPessoa(ctx)), {
+      tipo: 'erro',
+      texto: criada.aviso,
+    });
+  }
   await flashERedireciona(ctx, `/pessoas/${criada.id}`, { tipo: 'ok', texto: 'Pessoa cadastrada.' });
 });
 
@@ -307,8 +430,9 @@ rota('GET', '/pessoas/:id', async (ctx) => {
 rota('POST', '/pessoas/:id', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx) || !UUID.test(ctx.params.id ?? '')) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const salva = await atualizarPessoa(ctx.app, ctx.params.id ?? '', entradaPessoa(ctx));
-  const texto = salva.ok ? ['Pessoa atualizada.', ...salva.avisos].filter(Boolean).join('\n') : salva.aviso;
-  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}`, { tipo: salva.ok ? 'ok' : 'erro', texto });
+  if (!salva.ok) return htmlPessoa(ctx, ctx.params.id ?? '', rascunhoPessoa(ctx), null, { tipo: 'erro', texto: salva.aviso });
+  const texto = ['Pessoa atualizada.', ...salva.avisos].filter(Boolean).join('\n');
+  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}`, { tipo: 'ok', texto });
 });
 
 rota('POST', '/pessoas/:id/ativa', async (ctx) => {
@@ -323,7 +447,7 @@ rota('POST', '/pessoas/:id/ativa', async (ctx) => {
 rota('POST', '/pessoas/:id/gerar', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx) || !UUID.test(ctx.params.id ?? '')) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const gerada = await gerarCobranca(ctx.app, ctx.params.id ?? '', inteiro(ctx.form.get('ano')), inteiro(ctx.form.get('mes')), 'manual');
-  if (!gerada.ok) return flashERedireciona(ctx, `/pessoas/${ctx.params.id}`, { tipo: 'erro', texto: gerada.aviso });
+  if (!gerada.ok) return htmlPessoa(ctx, ctx.params.id ?? '', null, rascunhoMes(ctx), { tipo: 'erro', texto: gerada.aviso });
   await flashERedireciona(ctx, `/cobrancas/${gerada.cobrancaId}`, {
     tipo: gerada.pixOk ? 'ok' : 'erro',
     texto: gerada.pixOk ? 'Cobrança gerada.' : 'A cobrança foi registrada, mas a emissão do PIX falhou.',
@@ -350,14 +474,24 @@ rota('GET', '/pessoas/:id/itens', async (ctx) => {
 rota('POST', '/pessoas/:id/itens', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const salvo = await salvarItem(ctx.app, ctx.params.id ?? '', null, entradaItem(ctx));
-  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}/itens`, { tipo: salvo.ok ? 'ok' : 'erro', texto: salvo.ok ? 'Item salvo.' : salvo.aviso });
+  if (!salvo.ok) {
+    const mostrou = await htmlItens(ctx, ctx.params.id ?? '', rascunhoItem(ctx, null), { tipo: 'erro', texto: salvo.aviso });
+    if (!mostrou) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
+    return;
+  }
+  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}/itens`, { tipo: 'ok', texto: 'Item salvo.' });
 });
 
 rota('POST', '/itens/:id', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const pessoaId = ctx.form.get('pessoa_id') ?? '';
   const salvo = await salvarItem(ctx.app, pessoaId, ctx.params.id ?? '', entradaItem(ctx));
-  await flashERedireciona(ctx, `/pessoas/${pessoaId}/itens`, { tipo: salvo.ok ? 'ok' : 'erro', texto: salvo.ok ? 'Item atualizado.' : salvo.aviso });
+  if (!salvo.ok) {
+    const mostrou = await htmlItens(ctx, pessoaId, rascunhoItem(ctx, ctx.params.id ?? ''), { tipo: 'erro', texto: salvo.aviso });
+    if (!mostrou) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
+    return;
+  }
+  await flashERedireciona(ctx, `/pessoas/${pessoaId}/itens`, { tipo: 'ok', texto: 'Item atualizado.' });
 });
 
 rota('POST', '/itens/:id/excluir', async (ctx) => {
@@ -384,7 +518,7 @@ rota('GET', '/cobrancas', async (ctx) => {
     ctx,
     200,
     'Histórico',
-    paginaHistorico(linhas, await listarPessoas(ctx.app), {
+    paginaHistorico(linhas, await listarPessoas(ctx.app), ctx.sessao.csrf, {
       pessoa: ctx.url.searchParams.get('pessoa') ?? '',
       status: ctx.url.searchParams.get('status') ?? '',
       mes: ctx.url.searchParams.get('mes') ?? '',
@@ -414,9 +548,17 @@ rota('POST', '/cobrancas/:id/baixa', async (ctx) => {
 rota('POST', '/cobrancas/:id/cancelar', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const resultado = await cancelarCobranca(ctx.app, ctx.params.id ?? '', ctx.form.get('motivo') ?? '');
+  if (!resultado.ok) {
+    const detalhe = await detalharCobranca(ctx.app, ctx.params.id ?? '');
+    if (!detalhe) return html(ctx, 404, 'Não encontrada', '<h1>Cobrança não encontrada</h1>', null);
+    return html(ctx, 422, detalhe.competencia, paginaDetalhe(detalhe, ctx.sessao.csrf, campo(ctx, 'motivo')), {
+      tipo: 'erro',
+      texto: resultado.aviso,
+    });
+  }
   await flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, {
-    tipo: resultado.ok ? 'ok' : 'erro',
-    texto: resultado.ok ? (resultado.aviso ?? 'Cobrança cancelada.') : resultado.aviso,
+    tipo: 'ok',
+    texto: resultado.aviso ?? 'Cobrança cancelada.',
   });
 });
 
@@ -449,7 +591,8 @@ rota('POST', '/cobrancas/:id/reenviar', async (ctx) => {
     return flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, { tipo: 'erro', texto: 'Reenvio inválido.' });
   }
   const resultado = await reenviar(ctx.app, ctx.params.id ?? '', tipo, canal);
-  await flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, { tipo: resultado.ok ? 'ok' : 'erro', texto: resultado.ok ? 'Reenvio registrado.' : resultado.aviso });
+  const texto = resultado.ok ? (resultado.aviso ?? 'Reenvio registrado.') : resultado.aviso;
+  await flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, { tipo: resultado.ok ? 'ok' : 'erro', texto });
 });
 
 rota('GET', '/templates', async (ctx) => {
@@ -463,14 +606,18 @@ rota('POST', '/templates/prever', async (ctx) => {
   const tipo = ctx.form.get('tipo') ?? '';
   if (!canalValido(canal) || !tipoValido(tipo)) return html(ctx, 400, 'Templates', '<h1>Template inválido</h1>', null);
   const previsto = preverTemplate(canal, tipo, ctx.form.get('assunto'), ctx.form.get('corpo') ?? '');
+  const rascunho = { canal, tipo, assunto: campo(ctx, 'assunto'), corpo: campo(ctx, 'corpo'), destino: 'previa' as const };
   if (!previsto.ok) {
-    return html(ctx, 200, 'Templates', paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, null), { tipo: 'erro', texto: previsto.aviso });
+    return html(ctx, 422, 'Templates', paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, null, rascunho), {
+      tipo: 'erro',
+      texto: previsto.aviso,
+    });
   }
   html(
     ctx,
     200,
     'Templates',
-    paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, { titulo: `${canal} ${tipo}`, assunto: previsto.assunto, corpo: previsto.corpo }),
+    paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, { titulo: `${canal} ${tipo}`, assunto: previsto.assunto, corpo: previsto.corpo }, rascunho),
     null,
   );
 });
@@ -490,7 +637,22 @@ rota('POST', '/templates/:canal/:tipo', async (ctx) => {
   const tipo = ctx.params.tipo ?? '';
   if (!canalValido(canal) || !tipoValido(tipo)) return html(ctx, 404, 'Templates', '<h1>Template não encontrado</h1>', null);
   const salvo = await salvarTemplate(ctx.app, canal, tipo, ctx.form.get('assunto'), ctx.form.get('corpo') ?? '');
-  await flashERedireciona(ctx, '/templates', { tipo: salvo.ok ? 'ok' : 'erro', texto: salvo.ok ? 'Template salvo.' : salvo.aviso });
+  if (!salvo.ok) {
+    return html(
+      ctx,
+      422,
+      'Templates',
+      paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, null, {
+        canal,
+        tipo,
+        assunto: campo(ctx, 'assunto'),
+        corpo: campo(ctx, 'corpo'),
+        destino: 'bloco',
+      }),
+      { tipo: 'erro', texto: salvo.aviso },
+    );
+  }
+  await flashERedireciona(ctx, '/templates', { tipo: 'ok', texto: 'Template salvo.' });
 });
 
 rota('GET', '/configuracao', async (ctx) => {
@@ -515,7 +677,13 @@ rota('POST', '/configuracao', async (ctx) => {
     smtpRemetenteEmail: ctx.form.get('smtp_remetente_email') ?? '',
     smtpCriptografia: ctx.form.get('smtp_criptografia') ?? 'starttls',
   });
-  await flashERedireciona(ctx, '/configuracao', { tipo: salvo.ok ? 'ok' : 'erro', texto: salvo.ok ? 'Configuração salva.' : salvo.aviso });
+  if (!salvo.ok) {
+    return html(ctx, 422, 'Configuração', paginaConfiguracao(await lerConfigPublica(ctx.app), ctx.sessao.csrf, rascunhoConfig(ctx)), {
+      tipo: 'erro',
+      texto: salvo.aviso,
+    });
+  }
+  await flashERedireciona(ctx, '/configuracao', { tipo: 'ok', texto: 'Configuração salva.' });
 });
 
 rota('POST', '/configuracao/evolution', async (ctx) => {
@@ -523,6 +691,96 @@ rota('POST', '/configuracao/evolution', async (ctx) => {
   const teste = await testarEvolution(ctx.app);
   await flashERedireciona(ctx, '/configuracao', { tipo: teste.ok ? 'ok' : 'erro', texto: teste.motivo });
 });
+
+function campo(ctx: Ctx, nome: string): string {
+  return ctx.form.get(nome) ?? '';
+}
+
+function rascunhoPessoa(ctx: Ctx) {
+  return {
+    nome: campo(ctx, 'nome'),
+    whatsapp: campo(ctx, 'whatsapp'),
+    email: campo(ctx, 'email'),
+    cpf: campo(ctx, 'cpf'),
+    diaCobranca: campo(ctx, 'dia_cobranca'),
+    validadePixDias: campo(ctx, 'validade_pix_dias'),
+    diasAviso: campo(ctx, 'dias_aviso_inadimplencia'),
+    canalEmail: marcado(ctx.form, 'canal_email'),
+    canalWhatsapp: marcado(ctx.form, 'canal_whatsapp'),
+  };
+}
+
+function rascunhoItem(ctx: Ctx, id: string | null): RascunhoItem {
+  return {
+    id,
+    descricao: campo(ctx, 'descricao'),
+    valor: campo(ctx, 'valor'),
+    inicioMes: campo(ctx, 'inicio_mes'),
+    inicioAno: campo(ctx, 'inicio_ano'),
+    fimMes: campo(ctx, 'fim_mes'),
+    fimAno: campo(ctx, 'fim_ano'),
+  };
+}
+
+function rascunhoMes(ctx: Ctx) {
+  return { mes: campo(ctx, 'mes'), ano: campo(ctx, 'ano') };
+}
+
+function rascunhoConfig(ctx: Ctx) {
+  return {
+    usuario: campo(ctx, 'usuario'),
+    emailDono: campo(ctx, 'email_dono'),
+    smtpHost: campo(ctx, 'smtp_host'),
+    smtpPorta: campo(ctx, 'smtp_porta'),
+    smtpUsuario: campo(ctx, 'smtp_usuario'),
+    smtpRemetenteNome: campo(ctx, 'smtp_remetente_nome'),
+    smtpRemetenteEmail: campo(ctx, 'smtp_remetente_email'),
+    smtpCriptografia: campo(ctx, 'smtp_criptografia'),
+  };
+}
+
+function dataHoje(ctx: Ctx): string {
+  const hoje = partesNoFuso(ctx.app.clock());
+  return `${String(hoje.day).padStart(2, '0')}/${String(hoje.month).padStart(2, '0')}/${hoje.year}`;
+}
+
+async function htmlPessoa(
+  ctx: Ctx,
+  pessoaId: string,
+  rascunho: ReturnType<typeof rascunhoPessoa> | null,
+  geracao: ReturnType<typeof rascunhoMes> | null,
+  flash: Flash,
+): Promise<void> {
+  if (!ctx.sessao) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
+  const pessoa = await obterPessoa(ctx.app, pessoaId);
+  if (!pessoa) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
+  const hoje = partesNoFuso(ctx.app.clock());
+  html(
+    ctx,
+    422,
+    pessoa.nome,
+    paginaPessoa(pessoa, diaEfetivo(pessoa.dia_cobranca, hoje.year, hoje.month), ctx.sessao.csrf, `/pessoas/${pessoa.id}/itens`, rascunho, geracao),
+    flash,
+  );
+}
+
+async function htmlItens(ctx: Ctx, pessoaId: string, rascunho: RascunhoItem, flash: Flash): Promise<boolean> {
+  if (!ctx.sessao) return false;
+  const pessoa = await obterPessoa(ctx.app, pessoaId);
+  if (!pessoa) return false;
+  const itens = await listarItens(ctx.app, pessoa.id);
+  const usados = new Set<string>();
+  if (itens.length) {
+    const linhas = await consultar<{ item_id: string }>(
+      ctx.app.pool,
+      'SELECT DISTINCT item_id FROM linha_cobranca WHERE item_id = ANY($1::uuid[])',
+      [itens.map((item) => item.id)],
+    );
+    for (const linha of linhas) usados.add(linha.item_id);
+  }
+  html(ctx, 422, 'Itens', paginaItens(pessoa, itens, usados, ctx.sessao.csrf, rascunho), flash);
+  return true;
+}
 
 function entradaPessoa(ctx: Ctx) {
   return {
@@ -544,8 +802,8 @@ function entradaItem(ctx: Ctx) {
     valorCentavos: interpretarReais(ctx.form.get('valor') ?? ''),
     inicioAno: inteiro(ctx.form.get('inicio_ano')),
     inicioMes: inteiro(ctx.form.get('inicio_mes')),
-    fimAno: inteiro(ctx.form.get('fim_ano')),
-    fimMes: inteiro(ctx.form.get('fim_mes')),
+    fimAno: inteiroOpcional(ctx.form.get('fim_ano')),
+    fimMes: inteiroOpcional(ctx.form.get('fim_mes')),
   };
 }
 
@@ -565,7 +823,15 @@ export function criarServidor(app: App) {
 async function atender(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const host = req.headers.host ?? 'localhost';
   const url = new URL(req.url ?? '/', `http://${host}`);
-  const raw = req.method === 'GET' || req.method === 'HEAD' ? '' : await lerCorpo(req);
+  const metodoPedido = req.method ?? 'GET';
+  if ((metodoPedido === 'GET' || metodoPedido === 'HEAD') && url.pathname.startsWith('/estatico/')) {
+    if (!servirEstatico(res, url.pathname, metodoPedido)) {
+      res.statusCode = 404;
+      res.end();
+    }
+    return;
+  }
+  const raw = metodoPedido === 'GET' || metodoPedido === 'HEAD' ? '' : await lerCorpo(req);
   const cookies = lerCookies(req);
   const semSessao = url.pathname === '/health' || url.pathname.startsWith('/webhooks/');
   const sessaoId = cookies.get('pagaeu_sessao');

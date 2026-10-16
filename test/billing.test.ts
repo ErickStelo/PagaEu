@@ -11,6 +11,7 @@ import {
   gerarNovoPix,
   invalidarPix,
   tentarEmissao,
+  consultarCobrancasAbertas,
   verificarPixAtivos,
   type ResultadoGeracao,
 } from '../src/cobrancas.ts';
@@ -114,6 +115,10 @@ test('rolagem da Ana não soma os meses de novo', async () => {
   assert.match(texto, /1\.150,00/);
   assert.match(texto, /10/);
   assert.match(texto, /10\/04\/2026 09:00/);
+  const copia = await app().pool.query<{ copia_e_cola: string }>('SELECT copia_e_cola FROM pix WHERE cobranca_id = $1', [lista[0]!.id]);
+  const zap = evolution.enviados;
+  assert.equal(zap.at(-1)?.text, copia.rows[0]?.copia_e_cola);
+  assert.match(zap.at(-2)?.text ?? '', /Olá/);
 
   fixar(sp(2026, 4, 29));
   await executarJobDiario(app(), agora);
@@ -703,4 +708,23 @@ test('segunda linha de PIX aprovada depois da baixa manual fica excedente', asyn
   assert.equal((await cobrancasDe(manualId))[0]?.paga_em?.toISOString(), quandoManual.toISOString());
   const efeitoManual = await app().pool.query<{ efeito: string }>('SELECT efeito FROM evento_pagamento WHERE mp_payment_id = $1', [pixManual]);
   assert.equal(efeitoManual.rows[0]?.efeito, 'excedente');
+});
+
+test('consulta das abertas quita o PIX pago e envia a confirmação', async () => {
+  const pessoaId = await criarAna();
+  fixar(sp(2026, 3, 31));
+  const gerada = exigir(await gerarCobranca(app(), pessoaId, 2026, 3, 'manual', agora));
+  const pix = (await app().pool.query<{ mp_payment_id: string }>('SELECT mp_payment_id FROM pix WHERE cobranca_id = $1', [gerada.cobrancaId])).rows[0]!;
+  const quando = sp(2026, 4, 2, 11);
+  mp.aprovar(pix.mp_payment_id, quando);
+  correio.enviados.length = 0;
+  const resultado = await consultarCobrancasAbertas(app(), quando);
+  assert.equal(resultado.consultadas, 1);
+  assert.equal(resultado.pagas, 1);
+  assert.equal(resultado.confirmacoes, 1);
+  assert.equal((await cobrancasDe(pessoaId))[0]?.status, 'paga');
+  assert.equal(correio.enviados.some((item) => item.subject.includes('Pagamento recebido')), true);
+  const deNovo = await consultarCobrancasAbertas(app(), quando);
+  assert.equal(deNovo.consultadas, 0);
+  assert.equal(correio.enviados.filter((item) => item.subject.includes('Pagamento recebido')).length, 1);
 });

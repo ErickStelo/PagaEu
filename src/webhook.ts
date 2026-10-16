@@ -22,13 +22,16 @@ export async function receberWebhook(
     if (!dataId && json.data && (typeof json.data.id === 'string' || typeof json.data.id === 'number')) {
       dataId = String(json.data.id);
     }
-    if (!tipo && typeof json.action === 'string' && json.action.startsWith('payment')) tipo = 'payment';
+    if (!tipo && typeof json.action === 'string') {
+      if (json.action.startsWith('payment')) tipo = 'payment';
+      else if (json.action.startsWith('order')) tipo = 'order';
+    }
   } catch {
     dataId = dataId ?? null;
   }
   const manifesto = montarManifesto({ dataId, requestId: cabecalhos.requestId, ts: assinatura.ts });
   if (!assinaturaConfere(manifesto, segredo, assinatura.v1)) return 401;
-  if (tipo && tipo !== 'payment') return 200;
+  if (tipo && tipo !== 'payment' && tipo !== 'order') return 200;
   if (!dataId) return 200;
   try {
     await sincronizarPagamento(app, dataId, app.clock());

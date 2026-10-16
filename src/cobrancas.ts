@@ -12,7 +12,7 @@ import {
 } from './domain/calendar.ts';
 import { comporLinhas, type LinhaRascunho } from './domain/composicao.ts';
 import { centavosParaReais } from './domain/money.ts';
-import { urlNotificacao } from './env.ts';
+import { urlNotificacaoEnviavel } from './env.ts';
 import type { PagamentoRemoto } from './gateways.ts';
 import { enviarMensagem } from './mensagens.ts';
 import { mensagemErro, primeiroNome, redigir } from './texto.ts';
@@ -359,30 +359,54 @@ async function aplicarRemoto(cliente: Cliente, pix: Pix, remoto: PagamentoRemoto
   return vazio;
 }
 
-async function concluirEfeito(app: App, cliente: Cliente, efeito: Efeito, agora: Date, emCurso: Set<string>): Promise<void> {
-  if (efeito.confirmacaoId) await enviarMensagem(app, cliente, efeito.confirmacaoId, 'confirmacao', agora);
+async function concluirEfeito(
+  app: App,
+  cliente: Cliente,
+  efeito: Efeito,
+  agora: Date,
+  emCurso: Set<string>,
+): Promise<{ estado: 'enviada' | 'falha' | 'sem_canal' | 'nao'; motivo: string | null }> {
+  let confirmacao: { estado: 'enviada' | 'falha' | 'sem_canal' | 'nao'; motivo: string | null } = { estado: 'nao', motivo: null };
+  if (efeito.confirmacaoId) {
+    const envio = await enviarMensagem(app, cliente, efeito.confirmacaoId, 'confirmacao', agora);
+    confirmacao = envio === null
+      ? { estado: 'sem_canal', motivo: null }
+      : { estado: envio.ok ? 'enviada' : 'falha', motivo: envio.motivo };
+  }
   if (efeito.ancestrais.length > 0) await invalidarVarios(app, cliente, efeito.ancestrais, agora, emCurso);
+  return confirmacao;
 }
 
-async function sincronizarNaTrava(app: App, cliente: Cliente, mpId: string, agora: Date, emCurso = new Set<string>()): Promise<void> {
+async function sincronizarNaTrava(
+  app: App,
+  cliente: Cliente,
+  mpId: string,
+  agora: Date,
+  emCurso = new Set<string>(),
+): Promise<{ tipo: Efeito['tipo']; confirmacao: 'enviada' | 'falha' | 'sem_canal' | 'nao'; motivo: string | null }> {
   const pixes = await consultar<Pix>(cliente, 'SELECT * FROM pix WHERE mp_payment_id = $1', [mpId]);
   const pix = pixes[0];
-  if (!pix) return;
+  if (!pix) return { tipo: 'inalterado', confirmacao: 'nao', motivo: null };
   const remoto = await consultarRemoto(app, cliente, mpId);
   if (!remoto.ok) throw new Error(remoto.motivo);
   const efeito = await transacao(cliente, () => aplicarRemoto(cliente, pix, remoto.pagamento, agora));
-  await concluirEfeito(app, cliente, efeito, agora, emCurso);
+  const confirmacao = await concluirEfeito(app, cliente, efeito, agora, emCurso);
+  return { tipo: efeito.tipo, confirmacao: confirmacao.estado, motivo: confirmacao.motivo };
 }
 
-export async function sincronizarPagamento(app: App, mpId: string, agora = app.clock()): Promise<void> {
+export async function sincronizarPagamento(
+  app: App,
+  mpId: string,
+  agora = app.clock(),
+): Promise<{ tipo: Efeito['tipo']; confirmacao: 'enviada' | 'falha' | 'sem_canal' | 'nao'; motivo: string | null } | null> {
   const locais = await consultar<{ pessoa_id: string }>(
     app.pool,
     `SELECT c.pessoa_id FROM pix px JOIN cobranca c ON c.id = px.cobranca_id WHERE px.mp_payment_id = $1`,
     [mpId],
   );
   const pessoaId = locais[0]?.pessoa_id;
-  if (!pessoaId) return;
-  await comTravaPessoa(app.pool, pessoaId, (cliente) => sincronizarNaTrava(app, cliente, mpId, agora));
+  if (!pessoaId) return null;
+  return comTravaPessoa(app.pool, pessoaId, (cliente) => sincronizarNaTrava(app, cliente, mpId, agora));
 }
 
 async function invalidarUmPix(app: App, cliente: Cliente, pixId: string, agora: Date, emCurso: Set<string>): Promise<'cancelado' | 'ja_encerrado' | 'pago' | 'falha'> {
@@ -532,7 +556,7 @@ async function concluirEmissao(
       payerFirstName: primeiroNome(entrada.pessoa.nome),
       payerCpf: entrada.pessoa.cpf,
       dateOfExpiration: formatarExpiracaoMp(entrada.vence),
-      notificationUrl: urlNotificacao(app.env.publicUrl),
+      notificationUrl: urlNotificacaoEnviavel(app.env.publicUrl),
       externalReference: entrada.cobrancaId,
     });
   } catch (erro) {
@@ -612,8 +636,8 @@ export async function gerarCobranca(
       valor_centavos: number;
       inicio_ano: number;
       inicio_mes: number;
-      fim_ano: number;
-      fim_mes: number;
+      fim_ano: number | null;
+      fim_mes: number | null;
     }>(cliente, 'SELECT * FROM item WHERE pessoa_id = $1 ORDER BY criado_em, id', [pessoaId]);
     const cobrancaId = randomUUID();
     const rascunhos = comporLinhas({
@@ -917,6 +941,54 @@ export async function invalidarPix(app: App, cobrancaId: string, agora = app.clo
     if (resultado === 'cancelado' || resultado === 'ja_encerrado') return { ok: true };
     return { ok: false, aviso: 'Não foi possível invalidar o PIX.' };
   });
+}
+
+export type ResultadoConsultaAbertas = {
+  consultadas: number;
+  pagas: number;
+  confirmacoes: number;
+  semCanal: number;
+  falhaConfirmacao: number;
+  falhas: string[];
+};
+
+export async function consultarCobrancasAbertas(app: App, agora = app.clock()): Promise<ResultadoConsultaAbertas> {
+  const alvos = await consultar<{ mp_payment_id: string; nome: string }>(
+    app.pool,
+    `SELECT px.mp_payment_id, p.nome
+     FROM cobranca c
+     JOIN pix px ON px.cobranca_id = c.id
+     JOIN pessoa p ON p.id = c.pessoa_id
+     WHERE c.status = 'aberta'
+       AND px.status_local IN ('pendente', 'falha_cancelamento')
+       AND px.mp_payment_id IS NOT NULL
+     ORDER BY p.nome, c.competencia_ano, c.competencia_mes`,
+  );
+  const resultado: ResultadoConsultaAbertas = {
+    consultadas: 0,
+    pagas: 0,
+    confirmacoes: 0,
+    semCanal: 0,
+    falhaConfirmacao: 0,
+    falhas: [],
+  };
+  for (const alvo of alvos) {
+    try {
+      const efeito = await sincronizarPagamento(app, alvo.mp_payment_id, agora);
+      resultado.consultadas += 1;
+      if (efeito?.tipo !== 'baixa') continue;
+      resultado.pagas += 1;
+      if (efeito.confirmacao === 'enviada') resultado.confirmacoes += 1;
+      if (efeito.confirmacao === 'sem_canal') resultado.semCanal += 1;
+      if (efeito.confirmacao === 'falha') {
+        resultado.falhaConfirmacao += 1;
+        resultado.falhas.push(`${alvo.nome}: ${efeito.motivo ?? 'A confirmação não foi enviada.'}`);
+      }
+    } catch (erro) {
+      resultado.falhas.push(`${alvo.nome}: ${mensagemErro(erro)}`);
+    }
+  }
+  return resultado;
 }
 
 export async function verificarPixAtivos(app: App, agora = app.clock()): Promise<void> {

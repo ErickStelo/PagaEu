@@ -150,7 +150,33 @@ test('template, segredo e telas do painel', async () => {
       fim_mes: '2',
       fim_ano: '2026',
     });
-    assert.equal(invalido.status, 303);
+    assert.equal(invalido.status, 422);
+    assert.match(invalido.texto, /value="Sem fim"/);
+    assert.match(invalido.texto, /value="10,00"/);
+    assert.match(invalido.texto, /O início não pode ser posterior ao fim/);
+    assert.match(paginas[4]!.texto, /toastr\.min\.js/);
+    const estatico = await sessao.pedir('GET', '/estatico/painel.js');
+    assert.equal(estatico.status, 200);
+    assert.match(estatico.texto, /X-PagaEu/);
+    const ajax = await sessao.pedir(
+      'POST',
+      `/pessoas/${id}/itens`,
+      {
+        csrf: tokenItem,
+        descricao: 'Sem fim',
+        valor: '10,00',
+        inicio_mes: '3',
+        inicio_ano: '2026',
+        fim_mes: '2',
+        fim_ano: '2026',
+      },
+      { 'x-pagaeu': '1' },
+    );
+    assert.equal(ajax.status, 422);
+    const avisoAjax = JSON.parse(ajax.texto) as { ok: boolean; aviso: string; html?: string };
+    assert.equal(avisoAjax.ok, false);
+    assert.match(avisoAjax.aviso, /O início não pode ser posterior ao fim/);
+    assert.equal(avisoAjax.html, undefined);
     const salvos = await app().pool.query('SELECT id FROM item WHERE pessoa_id = $1', [id]);
     assert.equal(salvos.rows.length, 0);
     const direto = await salvarItem(app(), id, null, {
@@ -162,6 +188,37 @@ test('template, segredo e telas do painel', async () => {
       fimMes: 4,
     });
     assert.equal(direto.ok, false);
+    const semFim = await sessao.pedir('POST', `/pessoas/${id}/itens`, {
+      csrf: tokenItem,
+      descricao: 'Aluguel contínuo',
+      valor: '10,00',
+      inicio_mes: '3',
+      inicio_ano: '2026',
+      fim_mes: '',
+      fim_ano: '',
+    });
+    assert.equal(semFim.status, 303);
+    const lista = await sessao.pedir('GET', `/pessoas/${id}/itens`);
+    assert.match(lista.texto, /Aluguel contínuo/);
+    assert.match(lista.texto, /03\/2026/);
+    assert.match(lista.texto, /—/);
+    const gravado = await app().pool.query<{ fim_ano: number | null; fim_mes: number | null }>(
+      'SELECT fim_ano, fim_mes FROM item WHERE pessoa_id = $1',
+      [id],
+    );
+    assert.equal(gravado.rows[0]?.fim_ano, null);
+    assert.equal(gravado.rows[0]?.fim_mes, null);
+    const soMes = await sessao.pedir('POST', `/pessoas/${id}/itens`, {
+      csrf: tokenItem,
+      descricao: 'Meio período',
+      valor: '10,00',
+      inicio_mes: '3',
+      inicio_ano: '2026',
+      fim_mes: '12',
+      fim_ano: '',
+    });
+    assert.equal(soMes.status, 422);
+    assert.match(soMes.texto, /Informe o mês e o ano de fim juntos/);
   } finally {
     await servidor.fechar();
   }

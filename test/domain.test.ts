@@ -16,8 +16,7 @@ import { planejarTrocaDeDia } from '../src/domain/dia.ts';
 import { normalizarCpf, normalizarWhatsapp } from '../src/domain/documento.ts';
 import { formatarCentavos, formatarReais, interpretarReais } from '../src/domain/money.ts';
 import { CORPO_COBRANCA, DADOS_FICTICIOS, preencherTemplate, validarTemplate } from '../src/domain/template.ts';
-import { urlNotificacao } from '../src/env.ts';
-import { corpoPagamento } from '../src/mercadopago.ts';
+import { corpoOrdem } from '../src/mercadopago.ts';
 
 const aluguel: ItemComposicao = {
   id: 'aluguel',
@@ -104,6 +103,10 @@ test('maio da Ana copia só a cobrança anterior e fica em R$ 3.230,00', () => {
   assert.equal(itemCobreCompetencia(internet, 2026, 4), false);
   assert.equal(itemCobreCompetencia(aluguel, 2026, 3), true);
   assert.equal(itemCobreCompetencia(aluguel, 2026, 6), false);
+  const continuo: ItemComposicao = { ...aluguel, id: 'continuo', fimAno: null, fimMes: null };
+  assert.equal(itemCobreCompetencia(continuo, 2026, 2), false);
+  assert.equal(itemCobreCompetencia(continuo, 2026, 3), true);
+  assert.equal(itemCobreCompetencia(continuo, 2027, 1), true);
 });
 
 test('troca de dia segue o exemplo de junho', () => {
@@ -147,7 +150,8 @@ test('ações, cancelamento no Mercado Pago e corpo do PIX', () => {
   assert.equal(mpPermiteCancelar('authorized'), true);
   assert.equal(mpPermiteCancelar('approved'), false);
   assert.equal(mpPermiteCancelar('cancelled'), false);
-  const semCpf = corpoPagamento({
+  const agora = new Date('2026-04-01T12:00:00.000Z');
+  const semCpf = corpoOrdem({
     idempotencyKey: 'k',
     transactionAmount: 11.5,
     description: '03/2026 Ana',
@@ -155,13 +159,20 @@ test('ações, cancelamento no Mercado Pago e corpo do PIX', () => {
     payerFirstName: 'Ana',
     payerCpf: null,
     dateOfExpiration: '2026-04-10T09:00:00.000-03:00',
-    notificationUrl: urlNotificacao('https://painel.example'),
+    notificationUrl: 'https://painel.example/webhooks/mercadopago?source_news=webhooks',
     externalReference: 'cobranca',
-  });
+  }, agora);
   const payer = semCpf.payer as Record<string, unknown>;
   assert.equal('identification' in payer, false);
-  assert.equal(semCpf.notification_url, 'https://painel.example/webhooks/mercadopago?source_news=webhooks');
-  const comCpf = corpoPagamento({
+  assert.equal(semCpf.type, 'online');
+  assert.equal(semCpf.processing_mode, 'automatic');
+  assert.equal(semCpf.total_amount, '11.50');
+  assert.equal('notification_url' in semCpf, false);
+  const pagamento = (semCpf.transactions as { payments: Record<string, unknown>[] }).payments[0]!;
+  assert.equal(pagamento.amount, '11.50');
+  assert.deepEqual(pagamento.payment_method, { id: 'pix', type: 'bank_transfer' });
+  assert.match(String(pagamento.expiration_time), /^P\d+D/);
+  const comCpf = corpoOrdem({
     idempotencyKey: 'k',
     transactionAmount: 11.5,
     description: '03/2026 Ana',
@@ -169,10 +180,11 @@ test('ações, cancelamento no Mercado Pago e corpo do PIX', () => {
     payerFirstName: 'Ana',
     payerCpf: '52998224725',
     dateOfExpiration: '2026-04-10T09:00:00.000-03:00',
-    notificationUrl: 'https://painel.example/webhooks/mercadopago?source_news=webhooks',
+    notificationUrl: '',
     externalReference: 'cobranca',
-  });
+  }, agora);
   assert.deepEqual((comCpf.payer as { identification: unknown }).identification, { type: 'CPF', number: '52998224725' });
+  assert.equal('notification_url' in comCpf, false);
 });
 
 test('documento, template e assinatura do webhook', () => {
