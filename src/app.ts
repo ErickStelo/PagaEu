@@ -4,6 +4,7 @@ import { lerEnv, type Env } from './env.ts';
 import { criarEvolution } from './evolution.ts';
 import type { CorreioGateway, EvolutionGateway, MercadoPagoGateway } from './gateways.ts';
 import { criarMercadoPago } from './mercadopago.ts';
+import { importarEvolutionLegado, carregarEvolution } from './configuracao.ts';
 import { semearAdmin, semearModelos } from './semente.ts';
 
 export type App = {
@@ -27,11 +28,17 @@ export async function criarAplicacao(opcoes: {
   const pool = opcoes.pool ?? criarPool(env.databaseUrl);
   await esperarBanco(pool);
   await migrar(pool);
-  const evolution = opcoes.evolution ?? criarEvolution(() => ({
-    url: env.evolutionUrl,
-    apiKey: env.evolutionApiKey,
-    instance: env.evolutionInstance,
-  }));
+  await importarEvolutionLegado(pool, {
+    url: (process.env.EVOLUTION_GO_URL ?? '').trim().replace(/\/+$/, ''),
+    apiKey: process.env.EVOLUTION_GO_API_KEY ?? '',
+    instance: process.env.EVOLUTION_GO_INSTANCE ?? '',
+  });
+  const evolution =
+    opcoes.evolution ??
+    criarEvolution(async () => {
+      const cred = await carregarEvolution(pool);
+      return cred ?? { url: '', apiKey: '', instance: '' };
+    });
   const app: App = {
     pool,
     env,

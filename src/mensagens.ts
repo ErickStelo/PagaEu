@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { App } from './app.ts';
-import { carregarSmtp } from './configuracao.ts';
+import { carregarEvolution, carregarSmtp } from './configuracao.ts';
 import { comTravaPessoa, consultar, transacao, type Cliente } from './db.ts';
 import { formatarCompetencia, formatarDataHora, diasInteirosDesde } from './domain/calendar.ts';
 import { formatarCentavos } from './domain/money.ts';
@@ -176,6 +176,7 @@ export async function enviarMensagem(
     [tipo],
   );
   const smtp = await carregarSmtp(cliente);
+  const evolutionCred = await carregarEvolution(cliente);
   const vars = variaveis(ctx, tipo, agora);
   const canais: Canal[] = ['email', 'whatsapp'];
   let ultimo: { ok: boolean; motivo: string | null } | null = null;
@@ -196,7 +197,7 @@ export async function enviarMensagem(
       } else {
         const resultado = await app.evolution.enviarTexto(ctx.whatsapp, corpo);
         if (!resultado.ok) {
-          const motivo = redigir(resultado.motivo, [app.env.evolutionApiKey]);
+          const motivo = redigir(resultado.motivo, [evolutionCred?.apiKey]);
           await registrar(cliente, cobrancaId, tipo, canal, agora, false, motivo);
           ultimo = { ok: false, motivo };
           continue;
@@ -204,7 +205,7 @@ export async function enviarMensagem(
         if (tipo === 'cobranca' && ctx.copiaCola) {
           const chave = await app.evolution.enviarTexto(ctx.whatsapp, ctx.copiaCola);
           if (!chave.ok) {
-            const motivo = redigir(chave.motivo, [app.env.evolutionApiKey]);
+            const motivo = redigir(chave.motivo, [evolutionCred?.apiKey]);
             await registrar(cliente, cobrancaId, tipo, canal, agora, false, motivo);
             ultimo = { ok: false, motivo };
             continue;
@@ -214,7 +215,7 @@ export async function enviarMensagem(
         ultimo = { ok: true, motivo: null };
       }
     } catch (erro) {
-      const motivo = redigir(erro instanceof Error ? erro.message : 'Falha no envio', [smtp?.senha, app.env.evolutionApiKey]);
+      const motivo = redigir(erro instanceof Error ? erro.message : 'Falha no envio', [smtp?.senha, evolutionCred?.apiKey]);
       await registrar(cliente, cobrancaId, tipo, canal, agora, false, motivo);
       ultimo = { ok: false, motivo };
     }
@@ -229,21 +230,52 @@ export async function reenviar(
   canal: Canal,
   agora = app.clock(),
 ): Promise<{ ok: true; aviso: string } | { ok: false; aviso: string }> {
+  const resultado = await reenviarCanais(app, cobrancaId, tipo, [canal], agora);
+  return resultado;
+}
+
+export async function reenviarCanais(
+  app: App,
+  cobrancaId: string,
+  tipo: TipoMensagem,
+  canais: Canal[],
+  agora = app.clock(),
+): Promise<{ ok: true; aviso: string } | { ok: false; aviso: string }> {
+  const unicos = [...new Set(canais)];
+  if (!unicos.length) return { ok: false, aviso: 'Escolha pelo menos um canal.' };
   const pessoa = await consultar<{ pessoa_id: string }>(app.pool, 'SELECT pessoa_id FROM cobranca WHERE id = $1', [cobrancaId]);
   const pessoaId = pessoa[0]?.pessoa_id;
   if (!pessoaId) return { ok: false, aviso: 'Cobrança não encontrada.' };
   return comTravaPessoa(app.pool, pessoaId, async (cliente) => {
     const ctx = await carregar(cliente, cobrancaId);
     if (!ctx) return { ok: false, aviso: 'Cobrança não encontrada.' };
-    const permitido = reenvioPermitido({
-      status: ctx.status,
-      tipo,
-      canalSelecionado: canal === 'email' ? ctx.canalEmail : ctx.canalWhatsapp,
-      temPixAtivo: ctx.temPixAtivo,
-    });
-    if (!permitido) return { ok: false, aviso: 'Este reenvio não está disponível para a cobrança.' };
-    const envio = await enviarMensagem(app, cliente, cobrancaId, tipo, agora, canal);
-    if (!envio?.ok) return { ok: false, aviso: envio?.motivo || 'Não foi possível reenviar.' };
-    return { ok: true, aviso: canal === 'email' ? 'E-mail reenviado.' : 'WhatsApp reenviado.' };
+    let enviados = 0;
+    const falhas: string[] = [];
+    for (const canal of unicos) {
+      const permitido = reenvioPermitido({
+        status: ctx.status,
+        tipo,
+        canalSelecionado: canal === 'email' ? ctx.canalEmail : ctx.canalWhatsapp,
+        temPixAtivo: ctx.temPixAtivo,
+      });
+      if (!permitido) {
+        falhas.push(`${canal === 'email' ? 'E-mail' : 'WhatsApp'} não está disponível.`);
+        continue;
+      }
+      const envio = await enviarMensagem(app, cliente, cobrancaId, tipo, agora, canal);
+      if (!envio?.ok) {
+        falhas.push(envio?.motivo || `Falha no ${canal === 'email' ? 'e-mail' : 'WhatsApp'}.`);
+        continue;
+      }
+      enviados += 1;
+    }
+    if (enviados === 0) return { ok: false, aviso: falhas[0] ?? 'Não foi possível enviar.' };
+    if (falhas.length) {
+      return { ok: true, aviso: `Enviado em ${enviados} canal(is). ${falhas[0]}` };
+    }
+    if (enviados === 1) {
+      return { ok: true, aviso: unicos[0] === 'email' ? 'E-mail enviado.' : 'WhatsApp enviado.' };
+    }
+    return { ok: true, aviso: 'Mensagens enviadas nos canais escolhidos.' };
   });
 }

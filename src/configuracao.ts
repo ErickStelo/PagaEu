@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { App } from './app.ts';
 import { consultar, type Consultavel } from './db.ts';
 import { emailValido } from './domain/documento.ts';
+import { urlHttpRemotaPermitida } from './domain/url.ts';
 import {
   DADOS_FICTICIOS,
   TEMPLATES_PADRAO,
@@ -12,6 +13,7 @@ import {
   type TipoMensagem,
 } from './domain/template.ts';
 import { urlNotificacao } from './env.ts';
+import type { CredenciaisEvolution } from './evolution.ts';
 import type { SmtpConfig } from './gateways.ts';
 import { confereHash, gerarHash } from './senha.ts';
 
@@ -28,6 +30,9 @@ type LinhaConfig = {
   smtp_remetente_nome: string | null;
   smtp_remetente_email: string | null;
   smtp_criptografia: 'nenhuma' | 'starttls' | 'tls_implicito' | null;
+  evolution_url: string | null;
+  evolution_instance: string | null;
+  evolution_api_key: string | null;
   evolution_teste_em: Date | null;
   evolution_teste_ok: boolean | null;
   evolution_teste_motivo: string | null;
@@ -73,6 +78,30 @@ export async function carregarSegredoWebhook(cliente: Consultavel): Promise<stri
   return atual.mp_webhook_secret?.trim() || null;
 }
 
+export async function carregarEvolution(cliente: Consultavel): Promise<CredenciaisEvolution | null> {
+  const atual = await linha(cliente);
+  const url = atual.evolution_url?.trim() ?? '';
+  const instance = atual.evolution_instance?.trim() ?? '';
+  const apiKey = atual.evolution_api_key?.trim() ?? '';
+  if (!url || !instance || !apiKey) return null;
+  return { url, apiKey, instance };
+}
+
+export async function importarEvolutionLegado(
+  pool: Consultavel,
+  legado: { url: string; apiKey: string; instance: string },
+): Promise<void> {
+  if (!legado.url && !legado.apiKey && !legado.instance) return;
+  await pool.query(
+    `UPDATE configuracao SET
+      evolution_url = COALESCE(NULLIF(TRIM(evolution_url), ''), $1),
+      evolution_instance = COALESCE(NULLIF(TRIM(evolution_instance), ''), $2),
+      evolution_api_key = COALESCE(NULLIF(TRIM(evolution_api_key), ''), $3)
+     WHERE id = 1`,
+    [legado.url || null, legado.instance || null, legado.apiKey || null],
+  );
+}
+
 export async function carregarSmtp(cliente: Consultavel): Promise<SmtpConfig | null> {
   const atual = await linha(cliente);
   if (!atual.smtp_host || !atual.smtp_remetente_email || !atual.smtp_criptografia || !atual.smtp_porta) return null;
@@ -102,9 +131,9 @@ export async function lerConfigPublica(app: App): Promise<ConfigPublica> {
     smtpRemetenteEmail: atual.smtp_remetente_email ?? '',
     smtpCriptografia: atual.smtp_criptografia ?? 'starttls',
     evolution: {
-      url: app.env.evolutionUrl,
-      instancia: app.env.evolutionInstance,
-      chaveDefinida: Boolean(app.env.evolutionApiKey),
+      url: atual.evolution_url ?? '',
+      instancia: atual.evolution_instance ?? '',
+      chaveDefinida: Boolean(atual.evolution_api_key),
       ultimoTesteEm: atual.evolution_teste_em,
       ultimoTesteOk: atual.evolution_teste_ok,
       ultimoTesteMotivo: atual.evolution_teste_motivo,
@@ -127,6 +156,9 @@ export type EntradaConfig = {
   smtpRemetenteNome: string;
   smtpRemetenteEmail: string;
   smtpCriptografia: string;
+  evolutionUrl: string;
+  evolutionInstance: string;
+  evolutionApiKey: string;
 };
 
 export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Promise<{ ok: true } | { ok: false; aviso: string }> {
@@ -137,7 +169,29 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
   if (!emailValido(email)) return { ok: false, aviso: 'E-mail do dono inválido.' };
   const trocaSenha = entrada.senhaNova.trim().length > 0;
   const trocaEmail = email !== atual.email_dono;
-  if ((trocaSenha || trocaEmail) && !(await confereHash(entrada.senhaAtual, atual.senha_painel_hash))) {
+  const trocaUsuario = usuario !== atual.usuario_painel;
+  const trocaMpToken = entrada.mpAccessToken.trim().length > 0;
+  const trocaWebhook = entrada.mpWebhookSecret.trim().length > 0;
+  const trocaSmtpSenha = entrada.smtpSenha.trim().length > 0;
+  const trocaSmtpHost = entrada.smtpHost.trim() !== (atual.smtp_host ?? '').trim();
+  const trocaSmtpPorta = entrada.smtpPorta.trim() !== String(atual.smtp_porta ?? '').trim() && entrada.smtpPorta.trim().length > 0;
+  const trocaSmtpUsuario = entrada.smtpUsuario.trim() !== (atual.smtp_usuario ?? '').trim();
+  const evolutionUrl = entrada.evolutionUrl.trim();
+  const evolutionInstance = entrada.evolutionInstance.trim();
+  const trocaEvolutionUrl = evolutionUrl !== (atual.evolution_url ?? '').trim();
+  const trocaEvolutionInstancia = evolutionInstance !== (atual.evolution_instance ?? '').trim();
+  const trocaEvolutionChave = entrada.evolutionApiKey.trim().length > 0;
+  const trocaIntegracao = trocaMpToken
+    || trocaWebhook
+    || trocaSmtpSenha
+    || trocaSmtpHost
+    || trocaSmtpPorta
+    || trocaSmtpUsuario
+    || trocaEvolutionUrl
+    || trocaEvolutionInstancia
+    || trocaEvolutionChave;
+  if ((trocaSenha || trocaEmail || trocaUsuario || trocaIntegracao)
+    && !(await confereHash(entrada.senhaAtual, atual.senha_painel_hash))) {
     return { ok: false, aviso: 'A senha atual não confere.' };
   }
   const criptografia = entrada.smtpCriptografia;
@@ -150,6 +204,12 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
   }
   if (entrada.smtpRemetenteEmail.trim() && !emailValido(entrada.smtpRemetenteEmail)) {
     return { ok: false, aviso: 'E-mail do remetente inválido.' };
+  }
+  if (evolutionUrl && !urlHttpRemotaPermitida(evolutionUrl)) {
+    return { ok: false, aviso: 'URL do Evolution inválida ou não permitida.' };
+  }
+  if ((evolutionUrl || evolutionInstance || entrada.evolutionApiKey.trim()) && (!evolutionUrl || !evolutionInstance)) {
+    return { ok: false, aviso: 'Informe a URL e a instância do Evolution juntas.' };
   }
   const hash = trocaSenha ? await gerarHash(entrada.senhaNova.trim()) : atual.senha_painel_hash;
   await app.pool.query(
@@ -166,7 +226,10 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
       smtp_remetente_nome = $10,
       smtp_remetente_email = $11,
       smtp_criptografia = $12,
-      atualizado_em = $13
+      evolution_url = $13,
+      evolution_instance = $14,
+      evolution_api_key = $15,
+      atualizado_em = $16
      WHERE id = 1`,
     [
       usuario,
@@ -181,10 +244,26 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
       entrada.smtpRemetenteNome.trim() || null,
       entrada.smtpRemetenteEmail.trim() || null,
       entrada.smtpHost.trim() ? criptografia : atual.smtp_criptografia,
+      evolutionUrl || null,
+      evolutionInstance || null,
+      entrada.evolutionApiKey.trim() || atual.evolution_api_key,
       app.clock(),
     ],
   );
   return { ok: true };
+}
+
+export async function testarSmtp(app: App, destino: string): Promise<{ ok: boolean; motivo: string }> {
+  const email = destino.trim();
+  if (!emailValido(email)) return { ok: false, motivo: 'Informe um e-mail de teste válido.' };
+  const smtp = await carregarSmtp(app.pool);
+  if (!smtp) return { ok: false, motivo: 'SMTP não configurado. Salve host, porta, remetente e senha antes.' };
+  const resultado = await app.correio.enviar(smtp, {
+    to: email,
+    subject: 'Teste PagaEu',
+    text: 'Este é um e-mail de teste enviado pelo painel PagaEu. Se você recebeu, o SMTP está funcionando.',
+  });
+  return resultado.ok ? { ok: true, motivo: `E-mail de teste enviado para ${email}.` } : { ok: false, motivo: resultado.motivo };
 }
 
 export async function testarEvolution(app: App): Promise<{ ok: boolean; motivo: string }> {

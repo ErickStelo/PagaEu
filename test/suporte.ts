@@ -151,9 +151,6 @@ export function ambienteTeste(): Env {
     PAGAEU_ADMIN_EMAIL: 'dono@example.com',
     PAGAEU_PUBLIC_URL: 'https://painel.example',
     PAGAEU_LOGIN_CODE_DISABLED: 'false',
-    EVOLUTION_GO_URL: 'http://evolution.example',
-    EVOLUTION_GO_API_KEY: 'chave-super-secreta',
-    EVOLUTION_GO_INSTANCE: 'pagaeu',
   });
 }
 
@@ -176,6 +173,8 @@ export function app(): App {
 
 export async function limpar(): Promise<void> {
   const atual = app();
+  const { reiniciarLimites } = await import('../src/limites.ts');
+  reiniciarLimites();
   await atual.pool.query(`TRUNCATE TABLE
     evento_pagamento, envio, pix, linha_cobranca, cobranca, item, codigo_login, sessao, agendamento, pessoa, template, configuracao
     RESTART IDENTITY CASCADE`);
@@ -191,7 +190,10 @@ export async function limpar(): Promise<void> {
       smtp_senha = 'smtp-segredo',
       smtp_remetente_nome = 'PagaEu',
       smtp_remetente_email = 'cobranca@example.com',
-      smtp_criptografia = 'starttls'
+      smtp_criptografia = 'starttls',
+      evolution_url = 'http://evolution.example',
+      evolution_instance = 'pagaeu',
+      evolution_api_key = 'chave-super-secreta'
      WHERE id = 1`,
   );
   mp.reset();

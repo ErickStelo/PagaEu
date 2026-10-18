@@ -1,0 +1,5 @@
+version: '3'
+tunnels:
+  pagaeu:
+    proto: http
+    addr: 127.0.0.1:3010

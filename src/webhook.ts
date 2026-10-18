@@ -29,6 +29,10 @@ export async function receberWebhook(
   } catch {
     dataId = dataId ?? null;
   }
+  const tsSegundos = Number(assinatura.ts);
+  if (!Number.isFinite(tsSegundos)) return 401;
+  const agoraSegundos = Math.floor(app.clock().getTime() / 1000);
+  if (Math.abs(agoraSegundos - tsSegundos) > 600) return 401;
   const manifesto = montarManifesto({ dataId, requestId: cabecalhos.requestId, ts: assinatura.ts });
   if (!assinaturaConfere(manifesto, segredo, assinatura.v1)) return 401;
   if (tipo && tipo !== 'payment' && tipo !== 'order') return 200;

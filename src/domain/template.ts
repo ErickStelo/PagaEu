@@ -70,15 +70,6 @@ export function validarTemplate(
   }
   if (!corpo.trim()) return 'O texto não pode ficar vazio.';
   if (canal === 'email' && !assunto?.trim()) return 'O e-mail precisa de assunto.';
-  if (tipo === 'cobranca') {
-    const junto = textos.join('\n');
-    if (!junto.includes('{total}') || !junto.includes('{copia_e_cola}')) {
-      return 'O template de cobrança precisa de {total} e {copia_e_cola}.';
-    }
-    if (!junto.includes('{validade_dias}') && !junto.includes('{vence_em}')) {
-      return 'O template de cobrança precisa de {validade_dias} ou {vence_em}.';
-    }
-  }
   return null;
 }
 

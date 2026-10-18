@@ -7,6 +7,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY public ./public
 
 USER node
 

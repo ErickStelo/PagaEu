@@ -379,12 +379,14 @@ test('webhook, novo PIX, inadimplência, divergência e excedente', async () => 
   assert.equal(invalido, 401);
   assert.equal((await cobrancasDe(pessoaId))[0]?.status, 'aberta');
   const quando = sp(2026, 4, 2, 11);
+  fixar(quando);
   mp.aprovar(mpId, quando);
-  const manifesto = `id:${mpId};request-id:req-1;ts:99;`;
+  const tsWebhook = String(Math.floor(quando.getTime() / 1000));
+  const manifesto = `id:${mpId};request-id:req-1;ts:${tsWebhook};`;
   const v1 = createHmac('sha256', 'whsec-teste').update(manifesto).digest('hex');
   const valido = await receberWebhook(
     app(),
-    { assinatura: `ts=99,v1=${v1}`, requestId: 'req-1' },
+    { assinatura: `ts=${tsWebhook},v1=${v1}`, requestId: 'req-1' },
     new URL('https://painel.example/webhooks/mercadopago'),
     JSON.stringify({ type: 'payment', data: { id: mpId } }),
   );
@@ -392,7 +394,7 @@ test('webhook, novo PIX, inadimplência, divergência e excedente', async () => 
   assert.equal((await cobrancasDe(pessoaId))[0]?.paga_em?.toISOString(), quando.toISOString());
   const repetido = await receberWebhook(
     app(),
-    { assinatura: `ts=99,v1=${v1}`, requestId: 'req-1' },
+    { assinatura: `ts=${tsWebhook},v1=${v1}`, requestId: 'req-1' },
     new URL(`https://painel.example/webhooks/mercadopago?data.id=${mpId}`),
     JSON.stringify({ type: 'payment', data: { id: mpId } }),
   );

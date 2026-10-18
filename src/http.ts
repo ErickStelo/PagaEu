@@ -39,8 +39,17 @@ import {
   salvarConfiguracao,
   salvarTemplate,
   testarEvolution,
+  testarSmtp,
 } from './configuracao.ts';
 import { bancoSaudavel, consultar } from './db.ts';
+import {
+  ipDoPedido,
+  podeReenviarCodigo,
+  registrarFalha,
+  registrarReenvioCodigo,
+  registrarSucesso,
+  verificarTentativa,
+} from './limites.ts';
 import { mensagemErro } from './texto.ts';
 import {
   criarPessoa,
@@ -52,7 +61,7 @@ import {
   salvarItem,
   atualizarPessoa,
 } from './pessoas.ts';
-import { reenviar } from './mensagens.ts';
+import { reenviarCanais } from './mensagens.ts';
 import {
   layout,
   paginaConfiguracao,
@@ -89,6 +98,7 @@ function servirEstatico(res: ServerResponse, caminho: string, metodo: string): b
   res.statusCode = 200;
   res.setHeader('Content-Type', tipo);
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  cabecalhosSeguranca(res);
   res.setHeader('Cache-Control', 'no-cache');
   if (metodo === 'HEAD') res.end();
   else res.end(corpo);
@@ -120,13 +130,34 @@ function rota(metodo: string, caminho: string, tratar: (ctx: Ctx) => Promise<voi
   rotas.push({ metodo, regex, chaves, tratar });
 }
 
-function cookieSeguro(app: App): boolean {
-  return app.env.publicUrl.startsWith('https://');
+const AVISO_LIMITE = 'Muitas tentativas. Aguarde alguns minutos e tente de novo.';
+
+function cabecalhosSeguranca(res: ServerResponse): void {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  );
+}
+
+function cookieSeguro(ctx: Ctx): boolean {
+  if (ctx.app.env.publicUrl.startsWith('https://')) return true;
+  const encaminhado = ctx.req.headers['x-forwarded-proto'];
+  if (typeof encaminhado === 'string' && encaminhado.split(',')[0].trim().toLowerCase() === 'https') return true;
+  return false;
+}
+
+function recusarLimiteLogin(ctx: Ctx, etapaCodigo: boolean, valor = ''): void {
+  if (pedidoAjax(ctx)) {
+    json(ctx, 429, { ok: false, aviso: AVISO_LIMITE });
+    return;
+  }
+  html(ctx, 429, etapaCodigo ? 'Código' : 'Entrar', paginaLogin(AVISO_LIMITE, etapaCodigo, valor), null);
 }
 
 function definirCookie(ctx: Ctx, nome: string, valor: string, maxAge: number): void {
   const partes = [`${nome}=${encodeURIComponent(valor)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAge}`];
-  if (cookieSeguro(ctx.app)) partes.push('Secure');
+  if (cookieSeguro(ctx)) partes.push('Secure');
   ctx.cookies.push(partes.join('; '));
 }
 
@@ -173,6 +204,7 @@ function json(ctx: Ctx, status: number, corpo: Record<string, unknown>): void {
   ctx.res.setHeader('Content-Type', 'application/json; charset=utf-8');
   ctx.res.setHeader('X-Content-Type-Options', 'nosniff');
   ctx.res.setHeader('Referrer-Policy', 'same-origin');
+  cabecalhosSeguranca(ctx.res);
   ctx.res.end(JSON.stringify(corpo));
 }
 
@@ -194,6 +226,7 @@ function html(ctx: Ctx, status: number, titulo: string, corpo: string, flash: Fl
   ctx.res.setHeader('Content-Type', 'text/html; charset=utf-8');
   ctx.res.setHeader('X-Content-Type-Options', 'nosniff');
   ctx.res.setHeader('Referrer-Policy', 'same-origin');
+  cabecalhosSeguranca(ctx.res);
   ctx.res.end(layout({ titulo, corpo, autenticado: Boolean(ctx.sessao), flash, caminho: ctx.url.pathname }));
 }
 
@@ -308,12 +341,18 @@ rota('GET', '/login', async (ctx) => {
 });
 
 rota('POST', '/login', async (ctx) => {
+  const agoraMs = ctx.app.clock().getTime();
+  const chave = `senha:${ipDoPedido(ctx.req)}`;
+  const limite = verificarTentativa(chave, agoraMs);
+  if (!limite.permitido) return recusarLimiteLogin(ctx, false, ctx.form.get('usuario') ?? '');
   const resultado = await entrarComSenha(ctx.app, ctx.form.get('usuario') ?? '', ctx.form.get('senha') ?? '');
   if (!resultado.ok) {
+    registrarFalha(chave, agoraMs);
     if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: resultado.aviso });
     return html(ctx, 401, 'Entrar', paginaLogin(resultado.aviso, false, ctx.form.get('usuario') ?? ''), null);
   }
   if ('sessaoId' in resultado) {
+    registrarSucesso(chave);
     limparCookie(ctx, 'pagaeu_codigo');
     definirCookie(ctx, 'pagaeu_sessao', resultado.sessaoId, 12 * 60 * 60);
     ctx.sessao = await lerSessao(ctx.app, resultado.sessaoId);
@@ -324,6 +363,10 @@ rota('POST', '/login', async (ctx) => {
 });
 
 rota('POST', '/login/codigo', async (ctx) => {
+  const agoraMs = ctx.app.clock().getTime();
+  const chave = `codigo:${ipDoPedido(ctx.req)}`;
+  const limite = verificarTentativa(chave, agoraMs);
+  if (!limite.permitido) return recusarLimiteLogin(ctx, true, ctx.form.get('codigo') ?? '');
   const codigoId = lerCookies(ctx.req).get('pagaeu_codigo');
   if (!codigoId) {
     if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: 'Entre novamente com usuário e senha.', recarregar: true, ir: '/login' });
@@ -331,9 +374,12 @@ rota('POST', '/login/codigo', async (ctx) => {
   }
   const resultado = await confirmarCodigo(ctx.app, codigoId, ctx.form.get('codigo') ?? '');
   if (!resultado.ok) {
+    registrarFalha(chave, agoraMs);
     if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: resultado.aviso });
     return html(ctx, 401, 'Código', paginaLogin(resultado.aviso, true, ctx.form.get('codigo') ?? ''), null);
   }
+  registrarSucesso(chave);
+  registrarSucesso(`senha:${ipDoPedido(ctx.req)}`);
   limparCookie(ctx, 'pagaeu_codigo');
   definirCookie(ctx, 'pagaeu_sessao', resultado.sessaoId, 12 * 60 * 60);
   ctx.sessao = await lerSessao(ctx.app, resultado.sessaoId);
@@ -341,6 +387,12 @@ rota('POST', '/login/codigo', async (ctx) => {
 });
 
 rota('POST', '/login/reenviar', async (ctx) => {
+  const agoraMs = ctx.app.clock().getTime();
+  const ip = ipDoPedido(ctx.req);
+  if (!podeReenviarCodigo(ip, agoraMs)) {
+    if (pedidoAjax(ctx)) return json(ctx, 429, { ok: false, aviso: AVISO_LIMITE });
+    return html(ctx, 429, 'Código', paginaLogin(AVISO_LIMITE, true), null);
+  }
   const codigoId = lerCookies(ctx.req).get('pagaeu_codigo');
   if (!codigoId) {
     if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: 'Entre novamente com usuário e senha.', recarregar: true, ir: '/login' });
@@ -351,6 +403,7 @@ rota('POST', '/login/reenviar', async (ctx) => {
     if (pedidoAjax(ctx)) return json(ctx, 422, { ok: false, aviso: resultado.aviso });
     return html(ctx, 200, 'Código', paginaLogin(resultado.aviso, true), null);
   }
+  registrarReenvioCodigo(ip, agoraMs);
   definirCookie(ctx, 'pagaeu_codigo', resultado.codigoId, 30 * 60);
   html(ctx, 200, 'Código', paginaLogin(null, true), { tipo: 'ok', texto: 'Enviamos outro código.' });
 });
@@ -586,12 +639,12 @@ rota('POST', '/cobrancas/:id/tentar-emissao', async (ctx) => {
 rota('POST', '/cobrancas/:id/reenviar', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const tipo = ctx.form.get('tipo') ?? '';
-  const canal = ctx.form.get('canal') ?? '';
-  if (!tipoValido(tipo) || !canalValido(canal)) {
-    return flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, { tipo: 'erro', texto: 'Reenvio inválido.' });
+  const canais = ctx.form.getAll('canal').filter((valor): valor is Canal => canalValido(valor));
+  if (!tipoValido(tipo) || !canais.length) {
+    return flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, { tipo: 'erro', texto: 'Envio inválido.' });
   }
-  const resultado = await reenviar(ctx.app, ctx.params.id ?? '', tipo, canal);
-  const texto = resultado.ok ? (resultado.aviso ?? 'Reenvio registrado.') : resultado.aviso;
+  const resultado = await reenviarCanais(ctx.app, ctx.params.id ?? '', tipo, canais);
+  const texto = resultado.ok ? (resultado.aviso ?? 'Envio registrado.') : resultado.aviso;
   await flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, { tipo: resultado.ok ? 'ok' : 'erro', texto });
 });
 
@@ -676,6 +729,9 @@ rota('POST', '/configuracao', async (ctx) => {
     smtpRemetenteNome: ctx.form.get('smtp_remetente_nome') ?? '',
     smtpRemetenteEmail: ctx.form.get('smtp_remetente_email') ?? '',
     smtpCriptografia: ctx.form.get('smtp_criptografia') ?? 'starttls',
+    evolutionUrl: ctx.form.get('evolution_url') ?? '',
+    evolutionInstance: ctx.form.get('evolution_instance') ?? '',
+    evolutionApiKey: ctx.form.get('evolution_api_key') ?? '',
   });
   if (!salvo.ok) {
     return html(ctx, 422, 'Configuração', paginaConfiguracao(await lerConfigPublica(ctx.app), ctx.sessao.csrf, rascunhoConfig(ctx)), {
@@ -689,6 +745,12 @@ rota('POST', '/configuracao', async (ctx) => {
 rota('POST', '/configuracao/evolution', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const teste = await testarEvolution(ctx.app);
+  await flashERedireciona(ctx, '/configuracao', { tipo: teste.ok ? 'ok' : 'erro', texto: teste.motivo });
+});
+
+rota('POST', '/configuracao/smtp', async (ctx) => {
+  if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
+  const teste = await testarSmtp(ctx.app, ctx.form.get('email_teste') ?? '');
   await flashERedireciona(ctx, '/configuracao', { tipo: teste.ok ? 'ok' : 'erro', texto: teste.motivo });
 });
 
@@ -736,6 +798,8 @@ function rascunhoConfig(ctx: Ctx) {
     smtpRemetenteNome: campo(ctx, 'smtp_remetente_nome'),
     smtpRemetenteEmail: campo(ctx, 'smtp_remetente_email'),
     smtpCriptografia: campo(ctx, 'smtp_criptografia'),
+    evolutionUrl: campo(ctx, 'evolution_url'),
+    evolutionInstance: campo(ctx, 'evolution_instance'),
   };
 }
 

@@ -1,0 +1,38 @@
+# Desenvolvimento local: Postgres externo + rede do Mailpit (SMTP de teste).
+# Uso: docker compose -f docker-compose.dev.yml up -d --build
+
+services:
+  pagaeu:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://webmaster:pgsql.dev@postgres:5432/pagaeu
+      PAGAEU_PORT: 3000
+    ports:
+      - "${PAGAEU_PORT:-3010}:3000"
+    volumes:
+      - ./src:/app/src:ro
+      - ./public:/app/public:ro
+    networks:
+      - postgres
+      - mailpit
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+networks:
+  postgres:
+    external: true
+    name: ${PAGAEU_DOCKER_NETWORK:-postgres_default}
+  mailpit:
+    external: true
+    name: mailpit_default

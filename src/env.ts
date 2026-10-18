@@ -1,8 +1,7 @@
+import { hostRemotoPermitido } from './domain/url.ts';
+
 export type Env = {
   databaseUrl: string;
-  evolutionUrl: string;
-  evolutionApiKey: string;
-  evolutionInstance: string;
   publicUrl: string;
   adminUser: string;
   adminPassword: string;
@@ -22,9 +21,6 @@ export function lerEnv(origem: NodeJS.ProcessEnv = process.env): Env {
   const desligado = (origem.PAGAEU_LOGIN_CODE_DISABLED ?? '').trim().toLowerCase();
   return {
     databaseUrl,
-    evolutionUrl: semBarra(origem.EVOLUTION_GO_URL ?? ''),
-    evolutionApiKey: origem.EVOLUTION_GO_API_KEY ?? '',
-    evolutionInstance: origem.EVOLUTION_GO_INSTANCE ?? '',
     publicUrl: semBarra(origem.PAGAEU_PUBLIC_URL ?? ''),
     adminUser: origem.PAGAEU_ADMIN_USER?.trim() ?? '',
     adminPassword: origem.PAGAEU_ADMIN_PASSWORD ?? '',
@@ -41,8 +37,9 @@ export function urlNotificacao(urlPublica: string): string {
 export function urlNotificacaoEnviavel(urlPublica: string): string {
   if (!urlPublica) return '';
   try {
-    const host = new URL(urlPublica).hostname.replace(/^\[|\]$/g, '').toLowerCase();
-    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') return '';
+    const parsed = new URL(urlPublica);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    if (!hostRemotoPermitido(parsed.hostname)) return '';
     return urlNotificacao(urlPublica);
   } catch {
     return '';

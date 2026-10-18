@@ -28,6 +28,7 @@
     if (aside && novaAside) aside.innerHTML = novaAside.innerHTML;
     document.title = doc.title;
     mostrarFlash(document);
+    inicializarModais(document);
     main.focus();
     return true;
   }
@@ -77,6 +78,7 @@
       const main = document.querySelector('main');
       if (main) {
         main.innerHTML = json.html;
+        inicializarModais(document);
         main.focus();
       }
       if (json.titulo) document.title = json.titulo + ' · PagaEu';
@@ -109,7 +111,39 @@
     return ok;
   }
 
+  function abrirModal(id) {
+    const dialog = document.getElementById(id);
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    if (!dialog.open) dialog.showModal();
+    const campo = dialog.querySelector('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, select');
+    campo?.focus();
+  }
+
+  function fecharModal(dialog) {
+    if (dialog instanceof HTMLDialogElement && dialog.open) dialog.close();
+  }
+
+  function inicializarModais(raiz) {
+    const base = raiz || document;
+    base.querySelectorAll('dialog[data-modal-inicial]').forEach((dialog) => {
+      if (dialog instanceof HTMLDialogElement) abrirModal(dialog.id);
+    });
+  }
+
   document.addEventListener('click', (evento) => {
+    const abrir = evento.target.closest('[data-modal-abrir]');
+    if (abrir) {
+      evento.preventDefault();
+      abrirModal(abrir.getAttribute('data-modal-abrir'));
+      return;
+    }
+    const fechar = evento.target.closest('.modal-fechar');
+    if (fechar) {
+      evento.preventDefault();
+      const dialog = fechar.closest('dialog');
+      if (dialog) fecharModal(dialog);
+      return;
+    }
     const copiar = evento.target.closest('[data-copiar], [data-texto]');
     if (copiar) {
       evento.preventDefault();
@@ -162,4 +196,12 @@
   });
 
   mostrarFlash(document);
+  inicializarModais(document);
+
+  document.addEventListener('click', (evento) => {
+    const dialog = evento.target;
+    if (!(dialog instanceof HTMLDialogElement) || !dialog.classList.contains('modal')) return;
+    if (evento.target !== dialog) return;
+    fecharModal(dialog);
+  });
 })();

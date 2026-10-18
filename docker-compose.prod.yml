@@ -1,9 +1,14 @@
+# Produção: só a aplicação; banco e SMTP reais vêm do .env (host postgres na rede Docker).
+# Uso: docker compose -f docker-compose.prod.yml up -d --build
+
 services:
   pagaeu:
     build: .
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
+    environment:
+      PAGAEU_PORT: 3000
     ports:
       - "${PAGAEU_PORT:-3000}:3000"
     networks:

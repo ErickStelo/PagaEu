@@ -3,7 +3,7 @@ import type { CartaoPessoa, Detalhe, LinhaHistorico } from './consultas.ts';
 import { formatarDataHora } from './domain/calendar.ts';
 import { formatarReais } from './domain/money.ts';
 import type { ConfigPublica, TemplateLinha } from './configuracao.ts';
-import { variaveisDoCenario, type TipoMensagem } from './domain/template.ts';
+import { variaveisDoCenario, type Canal, type TipoMensagem } from './domain/template.ts';
 import type { Item, Pessoa } from './pessoas.ts';
 
 export function escapar(valor: unknown): string {
@@ -144,8 +144,28 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .checks label, label:has(input[type="checkbox"]), label:has(input[type="radio"]) { flex-direction:row; align-items:center; color:var(--ink); }
     input[type="checkbox"], input[type="radio"] { accent-color:var(--ciano); width:1rem; height:1rem; }
     .codigo { font-family:"JetBrains Mono", ui-monospace, monospace; word-break:break-all; }
-    .ficha { display:grid; grid-template-columns:minmax(0, 1fr) 340px; gap:16px; align-items:start; }
+    .ficha { display:grid; grid-template-columns:minmax(0, 1fr) minmax(260px, 340px); gap:16px; align-items:start; }
     .lateral { display:grid; gap:14px; }
+    .lateral .acoes { justify-content:flex-start; }
+    .lateral .acoes .botao, .lateral .acoes button { width:100%; text-align:center; }
+    .timeline-mensagens { list-style:none; margin:0; padding:4px 0 0; }
+    .timeline-mensagens li { position:relative; margin:0; padding:0 0 18px 26px; }
+    .timeline-mensagens li::before { content:""; position:absolute; left:5px; top:5px; width:10px; height:10px; border-radius:50%; background:var(--gray); box-shadow:0 0 0 3px var(--paper); }
+    .timeline-mensagens li.enviado::before { background:var(--ok); }
+    .timeline-mensagens li.falha::before { background:#F87171; }
+    .timeline-mensagens li::after { content:""; position:absolute; left:9px; top:18px; bottom:0; width:2px; background:var(--line); }
+    .timeline-mensagens li:last-child { padding-bottom:0; }
+    .timeline-mensagens li:last-child::after { display:none; }
+    .timeline-mensagens .timeline-quando { margin:0 0 4px; font-size:.85rem; }
+    .timeline-mensagens .timeline-titulo { margin:0; }
+    .timeline-mensagens .timeline-motivo { margin:6px 0 0; font-size:.9rem; }
+    .modal { border:1px solid var(--line); border-radius:12px; padding:0; margin:auto; background:var(--paper); color:var(--ink); max-width:min(440px, calc(100vw - 32px)); width:100%; }
+    .modal::backdrop { background:rgba(7,11,20,.75); }
+    .modal form { padding:20px 22px 22px; display:grid; gap:14px; margin:0; }
+    .modal-cabeca { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+    .modal-cabeca h2 { margin:0; font-size:1.15rem; }
+    .modal-fechar-x { min-width:2.25rem; padding:2px 8px; line-height:1.2; }
+    .modal-rodape { justify-content:flex-end; margin-top:4px; }
     body.porta { display:grid; grid-template-columns:minmax(280px, 1.05fr) minmax(320px, 1fr); grid-template-rows:1fr; }
     .marca-login { padding:64px 56px; background:#0B1220; border-top:3px solid var(--ciano); }
     .marca-login .olho { margin:0 0 18px; color:var(--ciano); font-family:"JetBrains Mono", ui-monospace, monospace; font-size:.78rem; letter-spacing:.08em; text-transform:uppercase; }
@@ -158,9 +178,10 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     body.porta form { display:grid; gap:14px; }
     body.porta form + form { margin-top:4px; }
     body.porta .sub { margin-bottom:18px; }
-    @media (max-width: 1100px) {
+    @media (max-width: 720px) {
       .ficha { display:block; }
       .lateral { margin-top:16px; }
+      .lateral .acoes .botao, .lateral .acoes button { width:auto; }
     }
     @media (max-width: 720px) {
       body.app, body.porta { display:block; }
@@ -217,8 +238,143 @@ function indicador(nome: string, valor: CartaoPessoa['email']): string {
   return `<span class="ponto ${classe}"><i></i>${e(nome)} ${texto}${motivo}</span>`;
 }
 
+function timelineMensagens(detalhe: Detalhe): string {
+  const eventos = detalhe.indicadores.flatMap((item) =>
+    item.tentativas.map((tentativa) => ({
+      tentadoEm: tentativa.tentadoEm,
+      tipo: item.tipo,
+      canal: item.canal,
+      resultado: tentativa.resultado,
+      motivo: tentativa.motivo,
+    })),
+  );
+  eventos.sort((a, b) => a.tentadoEm.getTime() - b.tentadoEm.getTime());
+  if (!eventos.length) return '<p class="muted">Nenhuma mensagem enviada ainda.</p>';
+  const itens = eventos.map((evento) => {
+    const classe = evento.resultado === 'enviado' ? 'enviado' : 'falha';
+    const rotulo = evento.resultado === 'enviado' ? 'Enviado' : 'Falha no envio';
+    const titulo = `${NOMES_TIPO[evento.tipo] ?? evento.tipo} · ${NOMES_CANAL[evento.canal] ?? evento.canal}`;
+    const detalheFalha = evento.motivo ? `<p class="muted timeline-motivo">${e(evento.motivo)}</p>` : '';
+    return `<li class="${classe}">
+        <p class="timeline-quando muted">${e(formatarDataHora(evento.tentadoEm))}</p>
+        <p class="timeline-titulo"><strong>${e(titulo)}</strong> · ${e(rotulo)}</p>
+        ${detalheFalha}
+      </li>`;
+  }).join('');
+  return `<ol class="timeline-mensagens">${itens}</ol>`;
+}
+
 function csrf(token: string): string {
   return `<input type="hidden" name="csrf" value="${e(token)}">`;
+}
+
+function canaisMensagem(detalhe: Detalhe, tipo: TipoMensagem): Canal[] {
+  return (['email', 'whatsapp'] as const).filter((canal) => detalhe.podeReenviar[`${tipo}:${canal}`]);
+}
+
+function canaisMensagemFlags(email: boolean, whatsapp: boolean): { email: boolean; whatsapp: boolean } {
+  return { email, whatsapp };
+}
+
+function botaoModal(id: string, rotulo: string, classe = 'secundario'): string {
+  return `<button type="button" class="${classe}" data-modal-abrir="${e(id)}">${e(rotulo)}</button>`;
+}
+
+function modalMensagem(
+  idModal: string,
+  cobrancaId: string,
+  csrfToken: string,
+  tipo: TipoMensagem,
+  titulo: string,
+  textoEnviar: string,
+  canais: { email: boolean; whatsapp: boolean },
+): string {
+  if (!canais.email && !canais.whatsapp) return '';
+  const marcadores = [
+    canais.email ? '<label><input type="checkbox" name="canal" value="email" checked> E-mail</label>' : '',
+    canais.whatsapp ? '<label><input type="checkbox" name="canal" value="whatsapp" checked> WhatsApp</label>' : '',
+  ].join('');
+  return `<dialog class="modal" id="${e(idModal)}">
+    <form method="post" action="/cobrancas/${e(cobrancaId)}/reenviar">
+      ${csrf(csrfToken)}
+      <input type="hidden" name="tipo" value="${e(tipo)}">
+      <header class="modal-cabeca">
+        <h2>${e(titulo)}</h2>
+        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+      </header>
+      <p class="muted">Marque os canais em que deseja enviar.</p>
+      <div class="checks">${marcadores}</div>
+      <div class="acoes modal-rodape">
+        <button type="button" class="secundario modal-fechar">Voltar</button>
+        <button type="submit">${e(textoEnviar)}</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
+function modalBaixaManual(detalhe: Detalhe, csrfToken: string): string {
+  if (!detalhe.acoes.baixaManual) return '';
+  const id = `modal-baixa-${detalhe.id}`;
+  const pixOpcoes = detalhe.pixAtivo
+    ? `<div class="checks"><label><input type="radio" name="pix" value="invalidar" checked> Invalidar o PIX</label>
+      <label><input type="radio" name="pix" value="manter"> Manter o PIX ativo</label></div>`
+    : '';
+  return `<dialog class="modal" id="${e(id)}">
+    <form id="baixa-cobranca-${e(detalhe.id)}" method="post" action="/cobrancas/${e(detalhe.id)}/baixa">
+      ${csrf(csrfToken)}
+      <header class="modal-cabeca">
+        <h2>Confirmar baixa</h2>
+        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+      </header>
+      ${pixOpcoes ? `<p class="muted">O que fazer com o PIX ativo?</p>${pixOpcoes}` : '<p class="muted">A cobrança será marcada como paga manualmente.</p>'}
+      <div class="acoes modal-rodape">
+        <button type="button" class="secundario modal-fechar">Voltar</button>
+        <button class="destaque" type="submit">Confirmar baixa</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
+function modalCancelarCobranca(detalhe: Detalhe, csrfToken: string, motivo: string): string {
+  if (!detalhe.acoes.cancelar) return '';
+  const id = `modal-cancelar-${detalhe.id}`;
+  const inicial = motivo ? ' data-modal-inicial' : '';
+  return `<dialog class="modal" id="${e(id)}"${inicial}>
+    <form id="cancelar-cobranca-${e(detalhe.id)}" method="post" action="/cobrancas/${e(detalhe.id)}/cancelar">
+      ${csrf(csrfToken)}
+      <header class="modal-cabeca">
+        <h2>Cancelar cobrança</h2>
+        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+      </header>
+      <label>Motivo<input name="motivo" required maxlength="500" value="${e(motivo)}"></label>
+      <div class="acoes modal-rodape">
+        <button type="button" class="secundario modal-fechar">Voltar</button>
+        <button class="perigo" type="submit">Confirmar cancelamento</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
+function modaisAcaoDetalhe(detalhe: Detalhe, csrfToken: string, motivo: string): string {
+  const cobranca = canaisMensagemFlags(
+    detalhe.podeReenviar['cobranca:email'] ?? false,
+    detalhe.podeReenviar['cobranca:whatsapp'] ?? false,
+  );
+  const inadimplencia = canaisMensagemFlags(
+    detalhe.podeReenviar['inadimplencia:email'] ?? false,
+    detalhe.podeReenviar['inadimplencia:whatsapp'] ?? false,
+  );
+  const confirmacao = canaisMensagemFlags(
+    detalhe.podeReenviar['confirmacao:email'] ?? false,
+    detalhe.podeReenviar['confirmacao:whatsapp'] ?? false,
+  );
+  return [
+    modalMensagem(`modal-reenviar-cobranca-${detalhe.id}`, detalhe.id, csrfToken, 'cobranca', 'Reenviar cobrança', 'Enviar', cobranca),
+    modalMensagem(`modal-inadimplencia-${detalhe.id}`, detalhe.id, csrfToken, 'inadimplencia', 'Inadimplência', 'Enviar aviso', inadimplencia),
+    modalMensagem(`modal-confirmacao-${detalhe.id}`, detalhe.id, csrfToken, 'confirmacao', 'Confirmação de pagamento', 'Enviar', confirmacao),
+    modalBaixaManual(detalhe, csrfToken),
+    modalCancelarCobranca(detalhe, csrfToken, motivo),
+  ].join('');
 }
 
 function acoesDaCobranca(
@@ -229,14 +385,46 @@ function acoesDaCobranca(
   const copiar = opcoes.copia
     ? `<button type="button" class="secundario" data-texto="${e(opcoes.copia)}">Copiar chave PIX</button>`
     : '';
-  const reenvio = (canal: 'email' | 'whatsapp', rotulo: string) =>
-    `<form method="post" action="/cobrancas/${e(id)}/reenviar">${csrf(csrfToken)}
-      <input type="hidden" name="tipo" value="cobranca"><input type="hidden" name="canal" value="${canal}">
-      <button class="secundario" type="submit">${rotulo}</button></form>`;
-  const email = opcoes.email ? reenvio('email', 'Reenviar e-mail') : '';
-  const whatsapp = opcoes.whatsapp ? reenvio('whatsapp', 'Reenviar WhatsApp') : '';
-  if (!copiar && !email && !whatsapp) return '';
-  return `<div class="acoes">${copiar}${email}${whatsapp}</div>`;
+  const reenviar = opcoes.email || opcoes.whatsapp
+    ? botaoModal(`modal-reenviar-cobranca-${id}`, 'Reenviar')
+    : '';
+  const modal = opcoes.email || opcoes.whatsapp
+    ? modalMensagem(`modal-reenviar-cobranca-${id}`, id, csrfToken, 'cobranca', 'Reenviar cobrança', 'Enviar', canaisMensagemFlags(opcoes.email, opcoes.whatsapp))
+    : '';
+  if (!copiar && !reenviar) return '';
+  return `<div class="acoes">${copiar}${reenviar}</div>${modal}`;
+}
+
+function botoesAcaoDetalhe(detalhe: Detalhe, csrfToken: string, motivoCancelamento = ''): string {
+  const partes: string[] = [];
+  if (detalhe.pixAtivo?.copia) {
+    partes.push(`<button type="button" class="secundario" data-texto="${e(detalhe.pixAtivo.copia)}">Copiar chave PIX</button>`);
+  }
+  if (canaisMensagem(detalhe, 'cobranca').length) {
+    partes.push(botaoModal(`modal-reenviar-cobranca-${detalhe.id}`, 'Reenviar'));
+  }
+  if (canaisMensagem(detalhe, 'inadimplencia').length) {
+    partes.push(botaoModal(`modal-inadimplencia-${detalhe.id}`, 'Enviar inadimplência'));
+  }
+  if (canaisMensagem(detalhe, 'confirmacao').length) {
+    partes.push(botaoModal(`modal-confirmacao-${detalhe.id}`, 'Reenviar confirmação'));
+  }
+  if (detalhe.acoes.novoPix) {
+    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/novo-pix">${csrf(csrfToken)}<button type="submit">Gerar novo PIX</button></form>`);
+  }
+  if (detalhe.acoes.invalidarPix) {
+    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/invalidar-pix">${csrf(csrfToken)}<button class="secundario" type="submit">Invalidar PIX</button></form>`);
+  }
+  if (detalhe.acoes.tentarEmissao) {
+    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/tentar-emissao">${csrf(csrfToken)}<button type="submit">Tentar emissão de novo</button></form>`);
+  }
+  if (detalhe.acoes.baixaManual) {
+    partes.push(botaoModal(`modal-baixa-${detalhe.id}`, 'Confirmar baixa', 'destaque'));
+  }
+  if (detalhe.acoes.cancelar && !motivoCancelamento) {
+    partes.push(botaoModal(`modal-cancelar-${detalhe.id}`, 'Cancelar cobrança', 'perigo'));
+  }
+  return partes.join('');
 }
 
 export type RascunhoPessoa = {
@@ -272,6 +460,8 @@ export type RascunhoConfig = {
   smtpRemetenteNome: string;
   smtpRemetenteEmail: string;
   smtpCriptografia: string;
+  evolutionUrl: string;
+  evolutionInstance: string;
 };
 
 export type RascunhoTemplate = {
@@ -509,59 +699,31 @@ export function paginaDetalhe(detalhe: Detalhe, csrfToken: string, motivo = ''):
       <td>${e(formatarDataHora(pix.venceEm))}</td>
       <td>${e(pix.mpStatus ?? '')}</td><td>${e(pix.motivo ?? '')}</td>
     </tr>`).join('');
-  const indicadores = detalhe.indicadores.map((item) => {
-    const chave = `${item.tipo}:${item.canal}`;
-    const botao = detalhe.podeReenviar[chave]
-      ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/reenviar">${csrf(csrfToken)}
-          <input type="hidden" name="tipo" value="${e(item.tipo)}"><input type="hidden" name="canal" value="${e(item.canal)}">
-          <button class="secundario" type="submit">Reenviar</button></form>`
-      : '';
-    return `<div class="card"><strong>${e(NOMES_TIPO[item.tipo] ?? item.tipo)} · ${e(NOMES_CANAL[item.canal] ?? item.canal)}</strong>
-      <div>${indicador(NOMES_CANAL[item.canal] ?? item.canal, item.indicador)}</div>
-      ${item.tentativas.map((tentativa) => `<p class="muted">${e(formatarDataHora(tentativa.tentadoEm))} · ${e(tentativa.resultado)}${tentativa.motivo ? ` · ${e(tentativa.motivo)}` : ''}</p>`).join('')}
-      ${botao ? `<div class="acoes">${botao}</div>` : ''}</div>`;
-  }).join('');
   const eventos = detalhe.eventos.map((evento) => `<li>${e(evento.efeito)} · ${formatarReais(evento.valorCentavos)} · ${e(formatarDataHora(evento.recebidoEm))}</li>`).join('');
   const afetadas = detalhe.linhasAfetadas.map((linha) => `${linha.descricao} (${String(linha.mes).padStart(2, '0')}/${linha.ano})`).join(', ');
   return `<p class="trilha"><a href="/cobrancas">Histórico</a> / ${e(detalhe.pessoa)}</p>
     <div class="topo"><div><h1>${e(detalhe.pessoa)} · ${e(detalhe.competencia)}</h1>
     <p class="sub"><a href="/pessoas/${e(detalhe.pessoaId)}">${e(detalhe.pessoa)}</a> · ${tagStatus(detalhe.status)} · ${e(detalhe.origem)}${detalhe.pagaEm ? ` · paga em ${e(formatarDataHora(detalhe.pagaEm))} (${e(detalhe.origemBaixa)})` : ''}</p></div>
     <p class="dinheiro">Total ${formatarReais(detalhe.total)}</p></div>
-    <div class="ficha">
-    <div class="coluna">
     ${detalhe.alerta || afetadas ? `<p class="alerta">A vigente inclui itens já pagos por um PIX antigo${afetadas ? `: ${e(afetadas)}` : ''}.</p>` : ''}
     ${eventos ? `<ul>${eventos}</ul>` : ''}
     ${detalhe.motivoCancelamento ? `<p>Cancelada em ${e(detalhe.canceladaEm ? formatarDataHora(detalhe.canceladaEm) : '')}. Motivo: ${e(detalhe.motivoCancelamento)}</p>` : ''}
-    <div class="bloco"><table><thead><tr><th>Descrição</th><th>Origem</th><th>Valor</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>
-    ${detalhe.pixAtivo ? `<div class="bloco"><h2>PIX ativo</h2><p>Vence em ${e(formatarDataHora(detalhe.pixAtivo.venceEm))} · <span class="dinheiro">${formatarReais(detalhe.pixAtivo.valorCentavos)}</span></p>
-      <textarea id="pix-copia" class="codigo" readonly>${e(detalhe.pixAtivo.copia)}</textarea>
-      <div class="acoes"><button type="button" data-copiar="pix-copia">Copiar chave PIX</button></div></div>` : '<p>Sem PIX ativo.</p>'}
-    <div class="bloco"><h2>Histórico de PIX</h2>
-    <table><thead><tr><th>Valor</th><th>Status</th><th>Validade</th><th>Vencimento</th><th>Mercado Pago</th><th>Motivo</th></tr></thead><tbody>${pixes}</tbody></table></div>
-    </div>
-    <div class="lateral">
-    <section class="bloco"><h2>Mensagens</h2><div class="cards">${indicadores}</div></section>
-    <section class="bloco"><h2>Ações</h2>
-      ${acoesDaCobranca(detalhe.id, csrfToken, {
-        copia: detalhe.pixAtivo?.copia ?? null,
-        email: Boolean(detalhe.podeReenviar['cobranca:email']),
-        whatsapp: Boolean(detalhe.podeReenviar['cobranca:whatsapp']),
-      })}
-      ${detalhe.acoes.baixaManual ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/baixa">${csrf(csrfToken)}
-        ${detalhe.pixAtivo ? `<div class="checks"><label><input type="radio" name="pix" value="invalidar" checked> Invalidar o PIX</label>
-        <label><input type="radio" name="pix" value="manter"> Manter o PIX ativo</label></div>` : ''}
-        <div class="acoes"><button class="destaque" type="submit">Confirmar baixa</button></div></form>` : ''}
-      ${detalhe.acoes.cancelar ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/cancelar">${csrf(csrfToken)}
-        <label>Motivo<input name="motivo" required maxlength="500" value="${e(motivo)}"></label>
-        <div class="acoes"><button class="perigo" type="submit">Cancelar cobrança</button></div></form>` : ''}
-      <div class="acoes">
-      ${detalhe.acoes.novoPix ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/novo-pix">${csrf(csrfToken)}<button type="submit">Gerar novo PIX</button></form>` : ''}
-      ${detalhe.acoes.invalidarPix ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/invalidar-pix">${csrf(csrfToken)}<button class="secundario" type="submit">Invalidar PIX</button></form>` : ''}
-      ${detalhe.acoes.tentarEmissao ? `<form method="post" action="/cobrancas/${e(detalhe.id)}/tentar-emissao">${csrf(csrfToken)}<button type="submit">Tentar emissão de novo</button></form>` : ''}
+    <div class="ficha">
+      <div class="coluna">
+        <div class="bloco"><table><thead><tr><th>Descrição</th><th>Origem</th><th>Valor</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>
+        ${detalhe.pixAtivo ? `<div class="bloco"><h2>PIX ativo</h2><p>Vence em ${e(formatarDataHora(detalhe.pixAtivo.venceEm))} · <span class="dinheiro">${formatarReais(detalhe.pixAtivo.valorCentavos)}</span></p>
+          <textarea id="pix-copia" class="codigo" readonly>${e(detalhe.pixAtivo.copia)}</textarea></div>` : '<p>Sem PIX ativo.</p>'}
+        <div class="bloco"><h2>Histórico de PIX</h2>
+        <table><thead><tr><th>Valor</th><th>Status</th><th>Validade</th><th>Vencimento</th><th>Mercado Pago</th><th>Motivo</th></tr></thead><tbody>${pixes}</tbody></table></div>
+        <section class="bloco"><h2>Mensagens</h2>${timelineMensagens(detalhe)}</section>
       </div>
-    </section>
+      <aside class="lateral">
+        <section class="bloco"><h2>Ações</h2>
+          <div class="acoes">${botoesAcaoDetalhe(detalhe, csrfToken, motivo) || '<span class="muted">Nenhuma ação disponível.</span>'}</div>
+        </section>
+      </aside>
     </div>
-    </div>`;
+    ${modaisAcaoDetalhe(detalhe, csrfToken, motivo)}`;
 }
 
 export function paginaTemplates(
@@ -615,7 +777,18 @@ export function paginaTemplates(
 
 export function paginaConfiguracao(config: ConfigPublica, csrfToken: string, rascunho: RascunhoConfig | null = null): string {
   const vista = rascunho
-    ? { ...config, usuario: rascunho.usuario, emailDono: rascunho.emailDono, smtpHost: rascunho.smtpHost, smtpPorta: rascunho.smtpPorta, smtpUsuario: rascunho.smtpUsuario, smtpRemetenteNome: rascunho.smtpRemetenteNome, smtpRemetenteEmail: rascunho.smtpRemetenteEmail, smtpCriptografia: rascunho.smtpCriptografia }
+    ? {
+        ...config,
+        usuario: rascunho.usuario,
+        emailDono: rascunho.emailDono,
+        smtpHost: rascunho.smtpHost,
+        smtpPorta: rascunho.smtpPorta,
+        smtpUsuario: rascunho.smtpUsuario,
+        smtpRemetenteNome: rascunho.smtpRemetenteNome,
+        smtpRemetenteEmail: rascunho.smtpRemetenteEmail,
+        smtpCriptografia: rascunho.smtpCriptografia,
+        evolution: { ...config.evolution, url: rascunho.evolutionUrl, instancia: rascunho.evolutionInstance },
+      }
     : config;
   config = vista;
   const teste = config.evolution.ultimoTesteEm
@@ -653,15 +826,24 @@ export function paginaConfiguracao(config: ConfigPublica, csrfToken: string, ras
           <option value="nenhuma" ${config.smtpCriptografia === 'nenhuma' ? 'selected' : ''}>Sem criptografia</option>
         </select></label>
       </div>
-      <div class="acoes"><button type="submit">Salvar</button></div>
-    </form>
-    <section class="bloco">
+      <p class="muted">O teste usa o SMTP já salvo. Salve antes se alterou host, porta ou senha.</p>
+      <div class="row">
+        <label>E-mail de teste<input name="email_teste" type="email" placeholder="${e(config.emailDono)}" autocomplete="off"></label>
+      </div>
+      <div class="acoes">
+        <button class="secundario" type="submit" formaction="/configuracao/smtp" formmethod="post">Enviar e-mail teste</button>
+      </div>
       <h2>Evolution Go</h2>
-      <p>Somente leitura, vindo do ambiente.</p>
-      <p>URL: ${e(config.evolution.url || 'não definida')}</p>
-      <p>Instância: ${e(config.evolution.instancia || 'não definida')}</p>
-      <p>Chave global: ${config.evolution.chaveDefinida ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}</p>
-      <p>${e(teste)}</p>
-      <form class="acoes" method="post" action="/configuracao/evolution">${csrf(csrfToken)}<button type="submit">Testar conexão</button></form>
-    </section>`;
+      <p>Chave API: ${config.evolution.chaveDefinida ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}. ${e(teste)}</p>
+      <div class="row">
+        <label>URL<input name="evolution_url" value="${e(config.evolution.url)}" placeholder="https://evolution.example"></label>
+        <label>Instância<input name="evolution_instance" value="${e(config.evolution.instancia)}"></label>
+        <label>Chave API<input name="evolution_api_key" type="password" autocomplete="off"></label>
+      </div>
+      <p class="muted">O teste usa o Evolution já salvo. Salve antes se alterou URL, instância ou chave.</p>
+      <div class="acoes">
+        <button class="secundario" type="submit" formaction="/configuracao/evolution" formmethod="post">Testar conexão</button>
+        <button type="submit">Salvar</button>
+      </div>
+    </form>`;
 }

@@ -2,24 +2,36 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-test('Compose sobe só a aplicação e aponta o banco por variável', async () => {
-  const compose = await readFile(new URL('../docker-compose.yml', import.meta.url), 'utf8');
-  const dockerfile = await readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
-  const exemplo = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+async function lerCompose(nome: string): Promise<string> {
+  return readFile(new URL(`../${nome}`, import.meta.url), 'utf8');
+}
+
+function assertComposeBase(compose: string): void {
   assert.equal(/image:\s*postgres/i.test(compose), false);
   assert.equal(compose.includes('POSTGRES_PASSWORD'), false);
   assert.match(compose, /env_file:/);
   assert.match(compose, /external:\s*true/);
-  assert.match(compose, /\$\{PAGAEU_DOCKER_NETWORK\}/);
-  assert.match(compose, /\$\{PAGAEU_PORT:-3000\}:3000/);
+  assert.match(compose, /\$\{PAGAEU_DOCKER_NETWORK/);
+  assert.match(compose, /\$\{PAGAEU_PORT/);
   assert.match(compose, /\/health/);
+}
+
+test('Compose dev e prod sobem só a aplicação e apontam o banco por variável', async () => {
+  const dev = await lerCompose('docker-compose.dev.yml');
+  const prod = await lerCompose('docker-compose.prod.yml');
+  const dockerfile = await readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
+  const exemplo = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+
+  assertComposeBase(dev);
+  assertComposeBase(prod);
+  assert.match(dev, /mailpit_default/);
+  assert.equal(prod.includes('mailpit'), false);
+  assert.match(prod, /restart:\s*always/);
+
   assert.match(dockerfile, /node:22/);
   assert.equal(dockerfile.includes('postgres:'), false);
   for (const chave of [
     'DATABASE_URL',
-    'EVOLUTION_GO_URL',
-    'EVOLUTION_GO_API_KEY',
-    'EVOLUTION_GO_INSTANCE',
     'PAGAEU_PUBLIC_URL',
     'PAGAEU_ADMIN_USER',
     'PAGAEU_ADMIN_PASSWORD',

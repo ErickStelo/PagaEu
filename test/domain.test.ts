@@ -14,6 +14,7 @@ import {
 import { comporLinhas, itemCobreCompetencia, type ItemComposicao, type LinhaRascunho } from '../src/domain/composicao.ts';
 import { planejarTrocaDeDia } from '../src/domain/dia.ts';
 import { normalizarCpf, normalizarWhatsapp } from '../src/domain/documento.ts';
+import { hostRemotoPermitido, urlHttpRemotaPermitida } from '../src/domain/url.ts';
 import { formatarCentavos, formatarReais, interpretarReais } from '../src/domain/money.ts';
 import { CORPO_COBRANCA, DADOS_FICTICIOS, preencherTemplate, validarTemplate } from '../src/domain/template.ts';
 import { corpoOrdem } from '../src/mercadopago.ts';
@@ -187,11 +188,20 @@ test('ações, cancelamento no Mercado Pago e corpo do PIX', () => {
   assert.equal('notification_url' in comCpf, false);
 });
 
+test('host remoto permitido para integrações', () => {
+  assert.equal(hostRemotoPermitido('evolution.example'), true);
+  assert.equal(hostRemotoPermitido('127.0.0.1'), false);
+  assert.equal(hostRemotoPermitido('10.0.0.5'), false);
+  assert.equal(hostRemotoPermitido('169.254.169.254'), false);
+  assert.equal(urlHttpRemotaPermitida('https://api.example.com'), true);
+  assert.equal(urlHttpRemotaPermitida('http://127.0.0.1:8080'), false);
+});
+
 test('documento, template e assinatura do webhook', () => {
   assert.equal(normalizarCpf('529.982.247-25'), '52998224725');
   assert.equal(normalizarCpf('111.111.111-11'), null);
   assert.equal(normalizarWhatsapp('(11) 98888-7777'), '5511988887777');
-  assert.equal(validarTemplate('whatsapp', 'cobranca', null, 'Olá {nome}'), 'O template de cobrança precisa de {total} e {copia_e_cola}.');
+  assert.equal(validarTemplate('whatsapp', 'cobranca', null, 'Olá {nome}'), null);
   assert.match(validarTemplate('email', 'cobranca', 'Oi', `${CORPO_COBRANCA} {inexistente}`) ?? '', /\{inexistente\}/);
   assert.equal(validarTemplate('whatsapp', 'cobranca', null, CORPO_COBRANCA), null);
   assert.match(preencherTemplate(CORPO_COBRANCA, DADOS_FICTICIOS), /Maria Exemplo/);

@@ -31,11 +31,17 @@ function listarInstancias(payload: unknown): Instancia[] {
   return achadas;
 }
 
-export function criarEvolution(credenciais: () => CredenciaisEvolution): EvolutionGateway {
+type LeitorCredenciais = () => CredenciaisEvolution | Promise<CredenciaisEvolution>;
+
+export function criarEvolution(credenciais: LeitorCredenciais): EvolutionGateway {
   let tokenEmMemoria: { instancia: string; token: string } | null = null;
 
+  async function ler(): Promise<CredenciaisEvolution> {
+    return await Promise.resolve(credenciais());
+  }
+
   async function buscarToken(forcar: boolean): Promise<{ ok: true; token: string } | { ok: false; motivo: string }> {
-    const atual = credenciais();
+    const atual = await ler();
     if (!atual.url || !atual.apiKey || !atual.instance) {
       return { ok: false, motivo: 'Evolution Go não configurado' };
     }
@@ -61,7 +67,7 @@ export function criarEvolution(credenciais: () => CredenciaisEvolution): Evoluti
   }
 
   async function postar(token: string, numero: string, texto: string): Promise<Response> {
-    const atual = credenciais();
+    const atual = await ler();
     return fetch(`${atual.url}/send/text`, {
       method: 'POST',
       headers: {
@@ -75,7 +81,7 @@ export function criarEvolution(credenciais: () => CredenciaisEvolution): Evoluti
 
   return {
     async enviarTexto(numero, texto) {
-      const atual = credenciais();
+      const atual = await ler();
       const primeiro = await buscarToken(false);
       if (!primeiro.ok) return primeiro;
       try {

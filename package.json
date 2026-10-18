@@ -7,9 +7,14 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node --experimental-strip-types src/main.ts",
+    "start": "node --env-file-if-exists=.env --experimental-strip-types src/main.ts",
     "test": "node --experimental-strip-types --test --test-concurrency=1 test/domain.test.ts test/billing.test.ts test/access.test.ts test/evolution.test.ts test/platform.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "tunnel": "bash scripts/ngrok-webhook.sh",
+    "tunnel:url": "bash scripts/ngrok-url.sh",
+    "docker:dev": "docker compose -f docker-compose.dev.yml up -d --build",
+    "docker:prod": "docker compose -f docker-compose.prod.yml up -d --build",
+    "simular:webhook": "node --env-file-if-exists=.env --experimental-strip-types scripts/simular-webhook-pagamento.ts"
   },
   "dependencies": {
     "nodemailer": "^8.0.7",
