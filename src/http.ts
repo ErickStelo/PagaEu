@@ -134,7 +134,16 @@ function rota(metodo: string, caminho: string, tratar: (ctx: Ctx) => Promise<voi
 
 const AVISO_LIMITE = 'Muitas tentativas. Aguarde alguns minutos e tente de novo.';
 
+const CABECALHO_ROBOTS = 'noindex, nofollow, noarchive, nosnippet, noimageindex';
+
+const CORPO_ROBOTS_TXT = 'User-agent: *\nDisallow: /\n';
+
+function cabecalhosSemIndexacao(res: ServerResponse): void {
+  res.setHeader('X-Robots-Tag', CABECALHO_ROBOTS);
+}
+
 function cabecalhosSeguranca(res: ServerResponse): void {
+  cabecalhosSemIndexacao(res);
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader(
     'Content-Security-Policy',
@@ -319,6 +328,8 @@ rota('GET', '/health', async (ctx) => {
   const ok = await bancoSaudavel(ctx.app.pool);
   ctx.res.statusCode = ok ? 200 : 503;
   ctx.res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  ctx.res.setHeader('X-Content-Type-Options', 'nosniff');
+  cabecalhosSemIndexacao(ctx.res);
   ctx.res.end(JSON.stringify({ ok }));
 });
 
@@ -893,7 +904,17 @@ async function atender(app: App, req: IncomingMessage, res: ServerResponse): Pro
   if (caminhoProibido(url.pathname)) {
     res.statusCode = 404;
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    cabecalhosSemIndexacao(res);
     res.end();
+    return;
+  }
+  if (url.pathname === '/robots.txt' && (metodoPedido === 'GET' || metodoPedido === 'HEAD')) {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    cabecalhosSeguranca(res);
+    if (metodoPedido === 'HEAD') res.end();
+    else res.end(CORPO_ROBOTS_TXT);
     return;
   }
   if ((metodoPedido === 'GET' || metodoPedido === 'HEAD') && url.pathname.startsWith('/estatico/')) {

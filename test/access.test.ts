@@ -248,6 +248,23 @@ test('saúde responde sem sessão', async () => {
   }
 });
 
+test('robots e cabeçalhos impedem indexação', async () => {
+  const servidor = await ouvir();
+  try {
+    const anônimo = new SessaoHttp(servidor.base);
+    const robots = await anônimo.pedir('GET', '/robots.txt');
+    assert.equal(robots.status, 200);
+    assert.match(robots.texto, /Disallow:\s*\//);
+    const login = await anônimo.pedir('GET', '/login');
+    assert.equal(login.status, 200);
+    assert.match(login.texto, /name="robots" content="noindex/);
+    const cabecalhos = await fetch(`${servidor.base}/robots.txt`);
+    assert.match((cabecalhos.headers.get('x-robots-tag') ?? '').toLowerCase(), /noindex/);
+  } finally {
+    await servidor.fechar();
+  }
+});
+
 test('arquivos sensíveis não são expostos pelo HTTP', async () => {
   const servidor = await ouvir();
   try {

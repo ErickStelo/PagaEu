@@ -39,6 +39,13 @@ server {
     client_max_body_size 2m;
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
+
+    location = /robots.txt {
+        default_type text/plain;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex" always;
+        return 200 "User-agent: *\nDisallow: /\n";
+    }
 
     location ~ /\.(?!well-known) {
         deny all;
