@@ -14,6 +14,7 @@ import {
 import { comporLinhas, itemCobreCompetencia, type ItemComposicao, type LinhaRascunho } from '../src/domain/composicao.ts';
 import { planejarTrocaDeDia } from '../src/domain/dia.ts';
 import { normalizarCpf, normalizarWhatsapp } from '../src/domain/documento.ts';
+import { caminhoProibido, nomeEstaticoPermitido } from '../src/caminho.ts';
 import { hostRemotoPermitido, urlHttpRemotaPermitida } from '../src/domain/url.ts';
 import { formatarCentavos, formatarReais, interpretarReais } from '../src/domain/money.ts';
 import { CORPO_COBRANCA, DADOS_FICTICIOS, preencherTemplate, validarTemplate } from '../src/domain/template.ts';
@@ -186,6 +187,16 @@ test('ações, cancelamento no Mercado Pago e corpo do PIX', () => {
   }, agora);
   assert.deepEqual((comCpf.payer as { identification: unknown }).identification, { type: 'CPF', number: '52998224725' });
   assert.equal('notification_url' in comCpf, false);
+});
+
+test('caminhos sensíveis ficam bloqueados', () => {
+  assert.equal(caminhoProibido('/.env'), true);
+  assert.equal(caminhoProibido('/estatico/../.env'), true);
+  assert.equal(caminhoProibido('/src/app.ts'), true);
+  assert.equal(caminhoProibido('/cobrancas'), false);
+  assert.equal(nomeEstaticoPermitido('painel.js'), true);
+  assert.equal(nomeEstaticoPermitido('../.env'), false);
+  assert.equal(nomeEstaticoPermitido('.env'), false);
 });
 
 test('host remoto permitido para integrações', () => {

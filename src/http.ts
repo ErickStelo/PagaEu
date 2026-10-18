@@ -41,6 +41,7 @@ import {
   testarEvolution,
   testarSmtp,
 } from './configuracao.ts';
+import { caminhoProibido, nomeEstaticoPermitido } from './caminho.ts';
 import { bancoSaudavel, consultar } from './db.ts';
 import {
   ipDoPedido,
@@ -88,6 +89,7 @@ const cacheEstatico = new Map<string, Buffer>();
 
 function servirEstatico(res: ServerResponse, caminho: string, metodo: string): boolean {
   const nome = caminho.slice('/estatico/'.length);
+  if (!nomeEstaticoPermitido(nome)) return false;
   const tipo = tiposEstaticos[nome];
   if (!tipo) return false;
   let corpo = nome === 'painel.js' ? undefined : cacheEstatico.get(nome);
@@ -888,6 +890,12 @@ async function atender(app: App, req: IncomingMessage, res: ServerResponse): Pro
   const host = req.headers.host ?? 'localhost';
   const url = new URL(req.url ?? '/', `http://${host}`);
   const metodoPedido = req.method ?? 'GET';
+  if (caminhoProibido(url.pathname)) {
+    res.statusCode = 404;
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.end();
+    return;
+  }
   if ((metodoPedido === 'GET' || metodoPedido === 'HEAD') && url.pathname.startsWith('/estatico/')) {
     if (!servirEstatico(res, url.pathname, metodoPedido)) {
       res.statusCode = 404;

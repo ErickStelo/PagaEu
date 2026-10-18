@@ -248,6 +248,30 @@ test('saúde responde sem sessão', async () => {
   }
 });
 
+test('arquivos sensíveis não são expostos pelo HTTP', async () => {
+  const servidor = await ouvir();
+  try {
+    const anônimo = new SessaoHttp(servidor.base);
+    for (const caminho of [
+      '/.env',
+      '/.env.local',
+      '/estatico/../.env',
+      '/estatico/.env',
+      '/estatico/secret.js',
+      '/src/app.ts',
+      '/.git/config',
+    ]) {
+      const resposta = await anônimo.pedir('GET', caminho);
+      assert.equal(resposta.status, 404, caminho);
+      assert.equal(resposta.texto.includes('DATABASE'), false, caminho);
+    }
+    const estatico = await anônimo.pedir('GET', '/estatico/painel.js');
+    assert.equal(estatico.status, 200);
+  } finally {
+    await servidor.fechar();
+  }
+});
+
 test('pessoa sem dado real não aparece na pré-visualização', async () => {
   const pessoa = await criarPessoa(app(), { nome: 'Cliente Real', whatsapp: '11900001111', email: 'real@example.com', diaCobranca: 3 });
   if (!pessoa.ok) throw new Error(pessoa.aviso);
