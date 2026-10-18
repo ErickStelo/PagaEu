@@ -3,6 +3,7 @@
 
 services:
   pagaeu:
+    container_name: pagaeu
     build: .
     restart: always
     env_file:
