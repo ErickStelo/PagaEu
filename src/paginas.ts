@@ -1,8 +1,16 @@
 import type { Flash } from './acesso.ts';
-import type { CartaoPessoa, Detalhe, LinhaHistorico } from './consultas.ts';
-import { formatarDataHora } from './domain/calendar.ts';
+import type { ResultadoConsultaAbertas } from './cobrancas.ts';
+import type { CartaoPessoa, Detalhe, LinhaHistorico, SituacaoPessoa } from './consultas.ts';
+import type { Dashboard, MesGrafico } from './dashboard.ts';
+import { formatarCompetencia, formatarDataHora } from './domain/calendar.ts';
+import { competenciaParaCampo, type SituacaoCobranca } from './domain/painel.ts';
 import { formatarReais } from './domain/money.ts';
-import type { ConfigPublica, TemplateLinha } from './configuracao.ts';
+import {
+  INTERVALOS_CONCILIACAO_MINUTOS,
+  ROTULOS_INTERVALO_CONCILIACAO,
+  type ConfigPublica,
+  type TemplateLinha,
+} from './configuracao.ts';
 import { variaveisDoCenario, type Canal, type TipoMensagem } from './domain/template.ts';
 import type { Item, Pessoa } from './pessoas.ts';
 
@@ -19,6 +27,10 @@ function e(valor: unknown): string {
   return escapar(valor);
 }
 
+function classeCampoInvalido(erros: Record<string, string> | null, nome: string): string {
+  return erros?.[nome] ? ' class="invalido"' : '';
+}
+
 const NOMES_TIPO: Record<string, string> = {
   cobranca: 'Cobrança',
   confirmacao: 'Confirmação de pagamento',
@@ -28,9 +40,10 @@ const NOMES_TIPO: Record<string, string> = {
 const NOMES_CANAL: Record<string, string> = { email: 'E-mail', whatsapp: 'WhatsApp' };
 const NOMES_STATUS: Record<string, string> = { aberta: 'Aberta', paga: 'Paga', cancelada: 'Cancelada' };
 
-type Secao = 'quem' | 'historico' | 'templates' | 'configuracao';
+type Secao = 'dashboard' | 'quem' | 'historico' | 'templates' | 'configuracao';
 
 function secaoAtual(caminho: string): Secao {
+  if (caminho === '/') return 'dashboard';
   if (caminho.startsWith('/cobrancas')) return 'historico';
   if (caminho.startsWith('/templates')) return 'templates';
   if (caminho.startsWith('/configuracao')) return 'configuracao';
@@ -48,7 +61,8 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     ? `<aside>
         <a class="marca" href="/">PagaEu</a>
         <nav>
-          ${itemNav(atual, 'quem', '/', 'Quem deve')}
+          ${itemNav(atual, 'dashboard', '/', 'Dashboard')}
+          ${itemNav(atual, 'quem', '/quem-deve', 'Quem deve')}
           ${itemNav(atual, 'historico', '/cobrancas', 'Histórico')}
           ${itemNav(atual, 'templates', '/templates', 'Templates')}
           ${itemNav(atual, 'configuracao', '/configuracao', 'Configuração')}
@@ -106,6 +120,60 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .metrica .ciano { color:var(--ciano); }
     .metrica .ok { color:var(--ok); }
     .metrica .amber { color:var(--amber); }
+    .metrica small { display:block; margin-top:6px; color:var(--muted); font-size:.82rem; }
+    .ciano { color:var(--ciano); }
+    .num { text-align:right; }
+    .pequeno { font-size:.84rem; }
+    .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+    .filtro-periodo, .filtros-lista { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .filtro-periodo label { flex-direction:row; align-items:center; gap:8px; }
+    .filtro-periodo input { padding:7px 10px; }
+    .filtros-lista input[type="search"] { min-width:240px; }
+    .graficos { display:grid; grid-template-columns:minmax(0, 2fr) minmax(280px, 1fr); gap:16px; margin-bottom:16px; }
+    .acoes-dashboard { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; margin-bottom:16px; }
+    .graficos .bloco, .acoes-dashboard .bloco { margin-bottom:0; }
+    .acoes-dashboard .bloco { display:flex; flex-direction:column; }
+    .acoes-dashboard .bloco > .row, .acoes-dashboard .bloco > form { margin-top:auto; }
+    .bloco-cabeca { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+    .bloco-cabeca h2 { margin:0; }
+    .bloco-cabeca p { margin:4px 0 0; font-size:.85rem; }
+    .grafico { width:100%; height:auto; display:block; }
+    .grafico .grade { stroke:var(--line); }
+    .grafico .eixo { fill:var(--muted); font:500 11px "JetBrains Mono", ui-monospace, monospace; }
+    .grafico rect { stroke:none; }
+    .grafico-vazio { padding:48px 0; text-align:center; }
+    .serie-paga { fill:var(--ok); stroke:var(--ok); background:var(--ok); }
+    .serie-aberta { fill:var(--ciano); stroke:var(--ciano); background:var(--ciano); }
+    .serie-atrasada { fill:var(--amber); stroke:var(--amber); background:var(--amber); }
+    .rosca { display:flex; justify-content:center; padding:4px 0 14px; }
+    .rosca svg { width:180px; height:180px; }
+    .rosca circle { fill:none; stroke-width:18; }
+    .rosca .trilho { stroke:rgba(255,255,255,.06); }
+    .rosca-rotulo { fill:var(--muted); font:600 10px Geist, sans-serif; letter-spacing:.08em; }
+    .rosca-valor { fill:var(--ink); font:600 15px "JetBrains Mono", ui-monospace, monospace; }
+    .legenda { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+    .legenda li { display:flex; justify-content:space-between; gap:12px; align-items:center; font-size:.9rem; }
+    .legenda-linha { display:flex; gap:16px; flex-wrap:wrap; }
+    .legenda-nome { display:inline-flex; align-items:center; gap:8px; }
+    .legenda i { width:10px; height:10px; border-radius:3px; display:inline-block; }
+    .tabela-bloco { padding:0; overflow:auto; }
+    .tabela-pessoas { min-width:860px; }
+    .tabela-pessoas th, .tabela-pessoas td { padding:12px 14px; vertical-align:middle; }
+    .tabela-pessoas th, .tabela-pessoas td.num, .tabela-pessoas td.codigo { white-space:nowrap; }
+    .tabela-pessoas td:last-child { white-space:nowrap; }
+    .tabela-pessoas tbody tr:hover { background:rgba(255,255,255,.02); }
+    .tabela-pessoas tfoot td { width:auto; border-bottom:0; background:rgba(255,255,255,.02); color:var(--muted); }
+    .tabela-pessoas td .acoes { margin-top:0; }
+    .nome-pessoa { color:var(--ink); font-weight:600; text-decoration:none; }
+    .nome-pessoa:hover { color:var(--ciano); }
+    .envio .ponto { display:flex; margin:0; font-size:.84rem; }
+    .tags { display:flex; gap:6px; flex-wrap:wrap; }
+    .alerta-linha { color:var(--amber); font-size:.8rem; margin-top:4px; }
+    button.compacto { padding:5px 10px; font-size:.84rem; }
+    .link-acao { font-weight:600; padding:0 4px; }
+    @media (max-width: 1080px) {
+      .graficos, .acoes-dashboard { grid-template-columns:1fr; }
+    }
     .cards { display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); }
     .card, form.bloco, .bloco, section.bloco { background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:16px 18px; }
     .topo { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; margin-bottom:16px; }
@@ -133,6 +201,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .flash { white-space:pre-wrap; border-radius:8px; padding:12px 14px; margin-bottom:16px; }
     .flash.ok { background:var(--ok-bg); color:var(--ok); }
     .flash.erro, .alerta { background:var(--amber-bg); color:#FDE68A; border:1px solid rgba(252,211,77,.28); border-radius:8px; padding:12px 14px; margin:10px 0; }
+    label.invalido input, label.invalido select, label.invalido textarea { border-color:var(--red); box-shadow:0 0 0 1px rgba(252,165,165,.45); }
     .ponto { display:inline-flex; align-items:center; gap:6px; margin-right:10px; }
     .ponto i { width:9px; height:9px; border-radius:50%; display:inline-block; background:var(--gray); }
     .ponto.enviado i { background:var(--ok); }
@@ -141,6 +210,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .tag.ok { color:var(--ok); background:var(--ok-bg); }
     .tag.off { color:var(--red); background:var(--red-bg); }
     .tag.aberta { color:#67E8F9; background:rgba(34,211,238,.12); }
+    .tag.atrasada { color:var(--amber); background:var(--amber-bg); }
     .acoes, .checks { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
     .acoes { justify-content:flex-end; }
     .checks label, label:has(input[type="checkbox"]), label:has(input[type="radio"]) { flex-direction:row; align-items:center; color:var(--ink); }
@@ -163,11 +233,28 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .timeline-mensagens .timeline-motivo { margin:6px 0 0; font-size:.9rem; }
     .modal { border:1px solid var(--line); border-radius:12px; padding:0; margin:auto; background:var(--paper); color:var(--ink); max-width:min(440px, calc(100vw - 32px)); width:100%; }
     .modal::backdrop { background:rgba(7,11,20,.75); }
-    .modal form { padding:20px 22px 22px; display:grid; gap:14px; margin:0; }
+    .modal form, .modal .modal-corpo { padding:20px 22px 22px; display:grid; gap:14px; margin:0; }
     .modal-cabeca { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
     .modal-cabeca h2 { margin:0; font-size:1.15rem; }
     .modal-fechar-x { min-width:2.25rem; padding:2px 8px; line-height:1.2; }
     .modal-rodape { justify-content:flex-end; margin-top:4px; }
+    .modal-largo { max-width:min(480px, calc(100vw - 32px)); }
+    .modal-mensagem { max-width:min(640px, calc(100vw - 32px)); max-height:min(85vh, 720px); overflow:auto; }
+    .mensagem-assunto { margin:0; }
+    .mensagem-previa { margin:0; white-space:pre-wrap; font-family:Geist, sans-serif; font-size:.95rem; line-height:1.55; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+    .consulta-resumo { display:grid; gap:12px; }
+    .consulta-bloco { border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:rgba(255,255,255,.02); }
+    .consulta-bloco h3 { margin:0 0 10px; font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); }
+    .consulta-bloco-total { border-color:rgba(34,211,238,.35); background:rgba(34,211,238,.06); }
+    .consulta-bloco-total h3 { color:var(--ciano); }
+    .consulta-linha { display:flex; justify-content:space-between; align-items:baseline; gap:20px; padding:7px 0; border-bottom:1px solid var(--line); font-size:.92rem; }
+    .consulta-linha:last-child { border-bottom:0; padding-bottom:0; }
+    .consulta-linha:first-of-type { padding-top:0; }
+    .consulta-linha span { color:var(--muted); flex:1; min-width:0; }
+    .consulta-linha strong { font-weight:600; font-variant-numeric:tabular-nums; color:var(--ink); flex-shrink:0; }
+    .lista-falhas { margin:0; padding:12px 14px; border-radius:8px; background:var(--amber-bg); border:1px solid rgba(252,211,77,.28); color:#FDE68A; list-style:none; }
+    .lista-falhas li { padding:4px 0; }
+    button.carregando { opacity:.7; cursor:wait; }
     body.porta { display:grid; grid-template-columns:minmax(280px, 1.05fr) minmax(320px, 1fr); grid-template-rows:1fr; }
     .marca-login { padding:64px 56px; background:#0B1220; border-top:3px solid var(--ciano); }
     .marca-login .olho { margin:0 0 18px; color:var(--ciano); font-family:"JetBrains Mono", ui-monospace, monospace; font-size:.78rem; letter-spacing:.08em; text-transform:uppercase; }
@@ -220,7 +307,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
 </html>`;
 }
 
-function etiqueta(texto: string, tipo: 'ok' | 'off' | 'aberta' | '' = ''): string {
+function etiqueta(texto: string, tipo: 'ok' | 'off' | 'aberta' | 'atrasada' | '' = ''): string {
   return `<span class="tag ${tipo}">${e(texto)}</span>`;
 }
 
@@ -337,6 +424,25 @@ function modalBaixaManual(detalhe: Detalhe, csrfToken: string): string {
   </dialog>`;
 }
 
+function modalReabrirCobranca(detalhe: Detalhe, csrfToken: string): string {
+  if (!detalhe.acoes.reabrir) return '';
+  const id = `modal-reabrir-${detalhe.id}`;
+  return `<dialog class="modal" id="${e(id)}">
+    <form id="reabrir-cobranca-${e(detalhe.id)}" method="post" action="/cobrancas/${e(detalhe.id)}/reabrir">
+      ${csrf(csrfToken)}
+      <header class="modal-cabeca">
+        <h2>Reabrir cobrança</h2>
+        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+      </header>
+      <p class="muted">Volta a cobrança vigente para em aberto, remove o registro local da baixa e recoloca o PIX aprovado como pendente (PIX nativo perde o vínculo com o pagamento no Mercado Pago). Não estorna dinheiro na conta.</p>
+      <div class="acoes modal-rodape">
+        <button type="button" class="secundario modal-fechar">Voltar</button>
+        <button class="perigo" type="submit">Confirmar reabertura</button>
+      </div>
+    </form>
+  </dialog>`;
+}
+
 function modalCancelarCobranca(detalhe: Detalhe, csrfToken: string, motivo: string): string {
   if (!detalhe.acoes.cancelar) return '';
   const id = `modal-cancelar-${detalhe.id}`;
@@ -375,6 +481,7 @@ function modaisAcaoDetalhe(detalhe: Detalhe, csrfToken: string, motivo: string):
     modalMensagem(`modal-inadimplencia-${detalhe.id}`, detalhe.id, csrfToken, 'inadimplencia', 'Inadimplência', 'Enviar aviso', inadimplencia),
     modalMensagem(`modal-confirmacao-${detalhe.id}`, detalhe.id, csrfToken, 'confirmacao', 'Confirmação de pagamento', 'Enviar', confirmacao),
     modalBaixaManual(detalhe, csrfToken),
+    modalReabrirCobranca(detalhe, csrfToken),
     modalCancelarCobranca(detalhe, csrfToken, motivo),
   ].join('');
 }
@@ -423,6 +530,9 @@ function botoesAcaoDetalhe(detalhe: Detalhe, csrfToken: string, motivoCancelamen
   if (detalhe.acoes.baixaManual) {
     partes.push(botaoModal(`modal-baixa-${detalhe.id}`, 'Confirmar baixa', 'destaque'));
   }
+  if (detalhe.acoes.reabrir) {
+    partes.push(botaoModal(`modal-reabrir-${detalhe.id}`, 'Reabrir cobrança', 'secundario'));
+  }
   if (detalhe.acoes.cancelar && !motivoCancelamento) {
     partes.push(botaoModal(`modal-cancelar-${detalhe.id}`, 'Cancelar cobrança', 'perigo'));
   }
@@ -464,6 +574,11 @@ export type RascunhoConfig = {
   smtpCriptografia: string;
   evolutionUrl: string;
   evolutionInstance: string;
+  pixProvedor: string;
+  pixChave: string;
+  pixRecebedor: string;
+  pixCidade: string;
+  conciliacaoIntervaloMinutos: string;
 };
 
 export type RascunhoTemplate = {
@@ -493,55 +608,323 @@ export function paginaLogin(erro: string | null, etapaCodigo: boolean, valor = '
     <p class="muted">O código de 6 dígitos chega no e-mail do dono.</p>`;
 }
 
-export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string, hoje: string, geracao: RascunhoMes | null = null): string {
-  const emAberto = cartoes.reduce((soma, cartao) => soma + (cartao.cobrancaId ? cartao.valorCentavos : 0), 0);
-  const ativas = cartoes.filter((cartao) => cartao.pessoa.ativa).length;
-  const alertas = cartoes.filter((cartao) => cartao.alertaItensPagos || cartao.excedente || cartao.divergencia).length;
-  const lista = cartoes.map((cartao) => {
-    const alertas = [
-      cartao.alertaItensPagos ? `A vigente inclui itens já pagos por um PIX antigo${cartao.linhasAfetadas.length ? `: ${cartao.linhasAfetadas.join(', ')}` : ''}.` : '',
-      cartao.excedente ? 'Pagamento excedente.' : '',
-      cartao.divergencia ? 'Divergência de valor.' : '',
-    ].filter(Boolean);
-    return `<article class="card">
-      <div class="topo">
-        <div><a href="/pessoas/${e(cartao.pessoa.id)}"><strong>${e(cartao.pessoa.nome)}</strong></a>
-          ${cartao.pessoa.ativa ? etiqueta('Ativa', 'ok') : etiqueta('Inativa', 'off')}
-          <div class="muted">Dia ${cartao.pessoa.dia_cobranca} · efetivo ${cartao.diaEfetivo}${cartao.pessoa.dia_cobranca_pendente ? ` · pendente ${cartao.pessoa.dia_cobranca_pendente} a partir de ${String(cartao.pessoa.dia_pendente_mes).padStart(2, '0')}/${cartao.pessoa.dia_pendente_ano}` : ''}</div>
-        </div>
-        <div class="dinheiro">${formatarReais(cartao.valorCentavos)}</div>
+function linhaConsulta(rotulo: string, valor: string | number): string {
+  return `<div class="consulta-linha"><span>${e(rotulo)}</span><strong>${e(String(valor))}</strong></div>`;
+}
+
+function blocoConsulta(titulo: string, itens: { rotulo: string; valor: number }[], destaque = false): string {
+  const corpo = itens.map((item) => linhaConsulta(item.rotulo, item.valor)).join('');
+  const classe = destaque ? 'consulta-bloco consulta-bloco-total' : 'consulta-bloco';
+  return `<section class="${classe}"><h3>${e(titulo)}</h3>${corpo}</section>`;
+}
+
+export function modalResultadoConsultaPagamentos(resultado: ResultadoConsultaAbertas): string {
+  const { conciliacao: c } = resultado;
+  const pagasGateway = Math.max(0, resultado.pagas - c.conciliadas);
+  const teveAtividade =
+    c.pendentes > 0
+    || c.entradasMp > 0
+    || c.conciliadas > 0
+    || resultado.consultadas > 0
+    || resultado.pagas > 0
+    || resultado.falhas.length > 0;
+  const blocos = teveAtividade
+    ? [
+        blocoConsulta('PIX nativo · extrato Mercado Pago', [
+          { rotulo: 'Pendentes no sistema', valor: c.pendentes },
+          { rotulo: 'Entradas novas no extrato', valor: c.entradasMp },
+          { rotulo: 'Cobranças quitadas', valor: c.conciliadas },
+        ]),
+        blocoConsulta('PIX Mercado Pago · gateway', [
+          { rotulo: 'PIX consultados', valor: resultado.consultadas },
+          { rotulo: 'Cobranças quitadas', valor: pagasGateway },
+        ]),
+        blocoConsulta('Total', [
+          { rotulo: 'Quitadas nesta consulta', valor: resultado.pagas },
+          { rotulo: 'Confirmações enviadas', valor: resultado.confirmacoes },
+          { rotulo: 'Sem canal de confirmação', valor: resultado.semCanal },
+          { rotulo: 'Falha ao enviar confirmação', valor: resultado.falhaConfirmacao },
+        ], true),
+      ].join('')
+    : '';
+  const falhas = resultado.falhas.length
+    ? `<ul class="lista-falhas">${resultado.falhas.map((texto) => `<li>${e(texto)}</li>`).join('')}</ul>`
+    : '';
+  const intro = teveAtividade
+    ? '<p class="muted">Resumo do que foi consultado e atualizado agora.</p>'
+    : '<p class="muted">Nenhum PIX pendente para conciliar ou consultar no gateway, e nenhuma cobrança nova foi quitada.</p>';
+  const tom = resultado.falhas.length && resultado.pagas === 0 ? 'erro' : 'ok';
+  return `<dialog class="modal modal-largo" id="modal-consulta-cobrancas" data-modal-inicial data-consulta-tom="${tom}">
+    <div class="modal-corpo">
+      <header class="modal-cabeca">
+        <h2>Resultado da consulta</h2>
+        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+      </header>
+      ${intro}
+      ${teveAtividade ? `<div class="consulta-resumo">${blocos}</div>` : ''}
+      ${falhas}
+      <div class="acoes modal-rodape">
+        <button type="button" class="secundario modal-fechar">Fechar</button>
       </div>
-      <p>${cartao.competencia ? `Vigente ${e(cartao.competencia)}` : 'Sem cobrança vigente'} · PIX ${e(cartao.pixTexto)}</p>
-      <div>${indicador('E-mail', cartao.email)}${indicador('WhatsApp', cartao.whatsapp)}</div>
-      ${alertas.map((texto) => `<p class="alerta">${e(texto)}</p>`).join('')}
-      ${cartao.cobrancaId ? `<a href="/cobrancas/${e(cartao.cobrancaId)}">Abrir cobrança</a>` : ''}
-      ${cartao.cobrancaId ? acoesDaCobranca(cartao.cobrancaId, csrfToken, { copia: cartao.copiaPix, email: cartao.podeEmail, whatsapp: cartao.podeWhatsapp }) : ''}
-    </article>`;
+    </div>
+  </dialog>`;
+}
+
+const NOMES_MES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+const SERIES: { chave: SituacaoCobranca; nome: string; classe: string }[] = [
+  { chave: 'paga', nome: 'Recebido', classe: 'serie-paga' },
+  { chave: 'aberta', nome: 'Em aberto', classe: 'serie-aberta' },
+  { chave: 'atrasada', nome: 'Atrasado', classe: 'serie-atrasada' },
+];
+
+function tagSituacao(situacao: SituacaoPessoa): string {
+  if (situacao === 'aberta') return etiqueta('Em aberto', 'aberta');
+  if (situacao === 'atrasada') return etiqueta('Atrasada', 'atrasada');
+  if (situacao === 'paga') return etiqueta('Paga', 'ok');
+  return etiqueta('Sem cobrança');
+}
+
+function formatarCompacto(centavos: number): string {
+  const reais = centavos / 100;
+  if (reais >= 1000) return `R$ ${(reais / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} mil`;
+  return `R$ ${Math.round(reais).toLocaleString('pt-BR')}`;
+}
+
+function escalaMaxima(valor: number): number {
+  if (valor <= 0) return 10_000;
+  const magnitude = 10 ** Math.floor(Math.log10(valor));
+  const passo = [1, 2, 2.5, 5, 10].find((fator) => fator * magnitude >= valor) ?? 10;
+  return passo * magnitude;
+}
+
+function formatarDia(data: Date): string {
+  return formatarDataHora(data).slice(0, 10);
+}
+
+function graficoBarras(meses: MesGrafico[]): string {
+  const largura = 640;
+  const altura = 260;
+  const esquerda = 72;
+  const direita = 8;
+  const topo = 12;
+  const base = 30;
+  const areaLargura = largura - esquerda - direita;
+  const areaAltura = altura - topo - base;
+  const somas = meses.map((mes) => mes.paga + mes.aberta + mes.atrasada);
+  if (somas.every((soma) => soma === 0)) {
+    return '<p class="muted grafico-vazio">Sem cobranças nas competências do gráfico.</p>';
+  }
+  const maximo = escalaMaxima(Math.max(...somas));
+  const passo = areaLargura / meses.length;
+  const largBarra = Math.min(44, passo * 0.56);
+  const grade = [0, 1, 2, 3, 4].map((marca) => {
+    const y = topo + areaAltura - (areaAltura * marca) / 4;
+    return `<line class="grade" x1="${esquerda}" x2="${largura - direita}" y1="${y}" y2="${y}"/>
+      <text class="eixo" x="${esquerda - 8}" y="${y + 4}" text-anchor="end">${e(formatarCompacto((maximo * marca) / 4))}</text>`;
   }).join('');
-  return `<div class="topo"><div><h1>Quem deve</h1><p class="sub">Hoje, ${e(hoje)}. O valor é só o da cobrança vigente.</p></div>
-    <a class="botao" href="/pessoas/nova">Nova pessoa</a></div>
-    <section class="metricas" aria-label="Resumo">
-      <article class="metrica"><span>Em aberto</span><strong class="ciano">${formatarReais(emAberto)}</strong></article>
-      <article class="metrica"><span>Pessoas ativas</span><strong class="ok">${ativas}</strong></article>
-      <article class="metrica"><span>Com alerta</span><strong class="amber">${alertas}</strong></article>
+  const barras = meses.map((mes, posicao) => {
+    const x = esquerda + passo * posicao + (passo - largBarra) / 2;
+    let acumulado = 0;
+    const segmentos = SERIES.map((serie) => {
+      const valor = mes[serie.chave];
+      if (valor <= 0) return '';
+      const h = (valor / maximo) * areaAltura;
+      acumulado += h;
+      const y = topo + areaAltura - acumulado;
+      return `<rect class="${serie.classe}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${largBarra.toFixed(1)}" height="${h.toFixed(1)}" rx="2"><title>${e(`${serie.nome} ${formatarCompetencia(mes.competencia.ano, mes.competencia.mes)}: ${formatarReais(valor)}`)}</title></rect>`;
+    }).join('');
+    const rotulo = `${NOMES_MES[mes.competencia.mes - 1]!.slice(0, 3)}/${String(mes.competencia.ano).slice(2)}`;
+    return `${segmentos}<text class="eixo" x="${(x + largBarra / 2).toFixed(1)}" y="${altura - 8}" text-anchor="middle">${e(rotulo)}</text>`;
+  }).join('');
+  return `<svg class="grafico" viewBox="0 0 ${largura} ${altura}" role="img" aria-label="Cobranças por mês">${grade}${barras}</svg>`;
+}
+
+function graficoRosca(totais: Dashboard['totais']): string {
+  const total = SERIES.reduce((soma, serie) => soma + totais[serie.chave].valorCentavos, 0);
+  const raio = 60;
+  const circunferencia = 2 * Math.PI * raio;
+  let acumulado = 0;
+  const fatias = total > 0
+    ? SERIES.map((serie) => {
+        const valor = totais[serie.chave].valorCentavos;
+        if (valor <= 0) return '';
+        const comprimento = (valor / total) * circunferencia;
+        const fatia = `<circle class="${serie.classe}" cx="80" cy="80" r="${raio}" stroke-dasharray="${comprimento.toFixed(2)} ${(circunferencia - comprimento).toFixed(2)}" stroke-dashoffset="${(-acumulado).toFixed(2)}" transform="rotate(-90 80 80)"><title>${e(`${serie.nome}: ${formatarReais(valor)}`)}</title></circle>`;
+        acumulado += comprimento;
+        return fatia;
+      }).join('')
+    : '';
+  const legenda = SERIES.map((serie) => {
+    const valor = totais[serie.chave].valorCentavos;
+    const pct = total > 0 ? Math.round((valor / total) * 100) : 0;
+    return `<li><span class="legenda-nome"><i class="${serie.classe}"></i>${e(serie.nome)} <span class="muted">(${pct}%)</span></span><strong class="dinheiro">${formatarReais(valor)}</strong></li>`;
+  }).join('');
+  return `<div class="rosca">
+      <svg viewBox="0 0 160 160" role="img" aria-label="Situação no período">
+        <circle class="trilho" cx="80" cy="80" r="${raio}"/>${fatias}
+        <text class="rosca-rotulo" x="80" y="72" text-anchor="middle">TOTAL</text>
+        <text class="rosca-valor" x="80" y="94" text-anchor="middle">${e(formatarCompacto(total))}</text>
+      </svg>
+    </div>
+    <ul class="legenda">${legenda}</ul>`;
+}
+
+function metricaDashboard(rotulo: string, valor: string, classe: string, detalhe: string): string {
+  return `<article class="metrica"><span>${e(rotulo)}</span><strong class="${classe}">${e(valor)}</strong><small>${e(detalhe)}</small></article>`;
+}
+
+function contarCobrancas(quantidade: number): string {
+  return quantidade === 1 ? '1 cobrança' : `${quantidade} cobranças`;
+}
+
+export function paginaDashboard(
+  painel: Dashboard,
+  csrfToken: string,
+  opcoes: { geracao: RascunhoMes | null; padraoGeracao: { mes: number; ano: number }; modalConsulta?: string | null },
+): string {
+  const { periodo, totais } = painel;
+  const inicio = formatarCompetencia(periodo.inicio.ano, periodo.inicio.mes);
+  const fim = formatarCompetencia(periodo.fim.ano, periodo.fim.mes);
+  const textoPeriodo = inicio === fim ? `Competência ${inicio}` : `Competências de ${inicio} a ${fim}`;
+  const taxa = painel.taxaRecebimento === null ? '—' : `${Math.round(painel.taxaRecebimento * 100)}%`;
+  const primeiroMes = painel.meses[0]?.competencia;
+  const ultimoMes = painel.meses.at(-1)?.competencia;
+  const faixaGrafico = primeiroMes && ultimoMes
+    ? `${formatarCompetencia(primeiroMes.ano, primeiroMes.mes)} a ${formatarCompetencia(ultimoMes.ano, ultimoMes.mes)}`
+    : '';
+  const mesGeracao = Number(opcoes.geracao?.mes || opcoes.padraoGeracao.mes);
+  const anoGeracao = opcoes.geracao?.ano || String(opcoes.padraoGeracao.ano);
+  const opcoesMes = NOMES_MES.map((nome, indice) =>
+    `<option value="${indice + 1}" ${mesGeracao === indice + 1 ? 'selected' : ''}>${String(indice + 1).padStart(2, '0')} · ${nome}</option>`,
+  ).join('');
+  const atrasadas = painel.atrasadas.map((linha) => `<tr>
+      <td><strong>${e(linha.pessoa)}</strong></td>
+      <td class="codigo">${e(linha.competencia)}</td>
+      <td>${e(formatarDia(linha.venceEm))}</td>
+      <td>${etiqueta(linha.diasAtraso === 1 ? '1 dia' : `${linha.diasAtraso} dias`, 'atrasada')}</td>
+      <td class="dinheiro num">${formatarReais(linha.valorCentavos)}</td>
+      <td><a href="/cobrancas/${e(linha.cobrancaId)}">Abrir cobrança</a></td>
+    </tr>`).join('');
+  return `<div class="topo"><div><h1>Dashboard</h1><p class="sub">${e(textoPeriodo)}</p></div>
+    <form class="filtro-periodo" method="get" action="/">
+      <label>De<input type="month" name="de" value="${e(competenciaParaCampo(periodo.inicio))}" placeholder="AAAA-MM" required></label>
+      <label>Até<input type="month" name="ate" value="${e(competenciaParaCampo(periodo.fim))}" placeholder="AAAA-MM" required></label>
+      <button class="secundario" type="submit">Filtrar</button>
+    </form></div>
+    <section class="metricas" aria-label="Indicadores do período">
+      ${metricaDashboard('Em aberto', formatarReais(totais.aberta.valorCentavos), 'ciano', `${contarCobrancas(totais.aberta.quantidade)} no prazo`)}
+      ${metricaDashboard('Recebido', formatarReais(totais.paga.valorCentavos), 'ok', `${contarCobrancas(totais.paga.quantidade)} quitadas`)}
+      ${metricaDashboard('Atrasado', formatarReais(totais.atrasada.valorCentavos), 'amber', `${contarCobrancas(totais.atrasada.quantidade)} com PIX vencido`)}
+      ${metricaDashboard('Taxa de recebimento', taxa, '', 'recebido sobre o total do período')}
     </section>
-    <section class="bloco">
-      <h2>Pagamentos no Mercado Pago</h2>
-      <p class="muted">Consulta o PIX das cobranças abertas. Se estava pendente e agora consta como pago, a cobrança é quitada e a confirmação é enviada.</p>
-      <form method="post" action="/cobrancas/consultar">${csrf(csrfToken)}
-        <div class="acoes"><button type="submit">Consultar cobranças abertas</button></div>
+    <div class="graficos">
+      <section class="bloco">
+        <div class="bloco-cabeca"><div><h2>Cobranças por mês</h2><p class="muted">${e(faixaGrafico)}</p></div>
+          <ul class="legenda legenda-linha">${SERIES.map((serie) => `<li><span class="legenda-nome"><i class="${serie.classe}"></i>${e(serie.nome)}</span></li>`).join('')}</ul></div>
+        ${graficoBarras(painel.meses)}
+      </section>
+      <section class="bloco">
+        <div class="bloco-cabeca"><div><h2>Situação no período</h2><p class="muted">${e(textoPeriodo)}</p></div></div>
+        ${graficoRosca(totais)}
+      </section>
+    </div>
+    <div class="acoes-dashboard">
+      <form class="bloco" method="post" action="/lote">
+        ${csrf(csrfToken)}
+        <h2>Gerar cobranças do mês</h2>
+        <p class="muted">Gera a cobrança e o PIX de todas as pessoas ativas na competência escolhida.</p>
+        <div class="row">
+          <label>Mês<select name="mes" required>${opcoesMes}</select></label>
+          <label>Ano<input name="ano" type="number" min="2000" max="2100" required value="${e(anoGeracao)}"></label>
+          <button type="submit">Gerar cobranças</button>
+        </div>
       </form>
+      <section class="bloco">
+        <h2>Consultar pagamentos</h2>
+        <p class="muted">Concilia PIX nativo pelo extrato do Mercado Pago e consulta os PIX emitidos pelo gateway. Cobrança quitada dispara a confirmação nos canais ligados.</p>
+        <form method="post" action="/cobrancas/consultar">${csrf(csrfToken)}
+          <div class="acoes"><button type="submit">Consultar cobranças abertas</button></div>
+        </form>
+      </section>
+    </div>
+    <section class="bloco">
+      <div class="bloco-cabeca"><h2>Atrasadas</h2>${painel.atrasadas.length ? etiqueta(contarCobrancas(painel.atrasadas.length), 'atrasada') : ''}</div>
+      ${atrasadas
+        ? `<table><thead><tr><th>Pessoa</th><th>Competência</th><th>Vencimento</th><th>Atraso</th><th class="num">Valor</th><th></th></tr></thead><tbody>${atrasadas}</tbody></table>`
+        : '<p class="muted">Nenhuma cobrança atrasada no período.</p>'}
     </section>
-    <form class="bloco" method="post" action="/lote">
-      ${csrf(csrfToken)}
-      <h2>Gerar cobranças do mês</h2>
-      <div class="row">
-        <label>Mês<input name="mes" type="number" min="1" max="12" required value="${e(geracao?.mes ?? '')}"></label>
-        <label>Ano<input name="ano" type="number" min="2000" max="2100" required value="${e(geracao?.ano ?? '')}"></label>
-        <button type="submit">Gerar cobranças do mês</button>
-      </div>
-    </form>
-    <div class="cards">${lista || '<p>Nenhuma pessoa cadastrada.</p>'}</div>`;
+    ${opcoes.modalConsulta ?? ''}`;
+}
+
+function canaisDaPessoa(pessoa: Pessoa): string {
+  const canais = [pessoa.canal_whatsapp ? 'WhatsApp' : '', pessoa.canal_email ? 'e-mail' : ''].filter(Boolean);
+  return canais.length ? canais.join(' e ') : 'sem canal';
+}
+
+function linhaQuemDeve(cartao: CartaoPessoa, csrfToken: string): string {
+  const alertas = [
+    cartao.alertaItensPagos ? `Inclui itens já pagos por um PIX antigo${cartao.linhasAfetadas.length ? `: ${cartao.linhasAfetadas.join(', ')}` : ''}.` : '',
+    cartao.excedente ? 'Pagamento excedente.' : '',
+    cartao.divergencia ? 'Divergência de valor.' : '',
+  ].filter(Boolean);
+  const idModal = cartao.cobrancaId ? `modal-reenviar-cobranca-${cartao.cobrancaId}` : '';
+  const podeReenviar = Boolean(cartao.cobrancaId && (cartao.podeEmail || cartao.podeWhatsapp));
+  const acoes = [
+    cartao.copiaPix ? `<button type="button" class="secundario compacto" data-texto="${e(cartao.copiaPix)}">Copiar PIX</button>` : '',
+    podeReenviar ? botaoModal(idModal, 'Reenviar', 'secundario compacto') : '',
+    cartao.cobrancaId
+      ? `<a class="link-acao" href="/cobrancas/${e(cartao.cobrancaId)}">Abrir</a>`
+      : `<a class="link-acao" href="/pessoas/${e(cartao.pessoa.id)}">Abrir</a>`,
+  ].join('');
+  const modal = podeReenviar && cartao.cobrancaId
+    ? modalMensagem(idModal, cartao.cobrancaId, csrfToken, 'cobranca', 'Reenviar cobrança', 'Enviar', canaisMensagemFlags(cartao.podeEmail, cartao.podeWhatsapp))
+    : '';
+  const envio = cartao.cobrancaId
+    ? `${cartao.pessoa.canal_email ? indicador('E-mail', cartao.email) : ''}${cartao.pessoa.canal_whatsapp ? indicador('WhatsApp', cartao.whatsapp) : ''}`
+    : '';
+  return `<tr data-pessoa data-nome="${e(cartao.pessoa.nome)}" data-situacao="${e(cartao.situacao)}" data-inativa="${cartao.pessoa.ativa ? '0' : '1'}">
+      <td><a class="nome-pessoa" href="/pessoas/${e(cartao.pessoa.id)}">${e(cartao.pessoa.nome)}</a>
+        <div class="muted pequeno">Dia ${cartao.diaEfetivo} · ${e(canaisDaPessoa(cartao.pessoa))}</div>
+        ${alertas.map((texto) => `<div class="alerta-linha">${e(texto)}</div>`).join('')}</td>
+      <td class="codigo">${e(cartao.competencia ?? '—')}</td>
+      <td class="dinheiro num">${cartao.cobrancaId ? formatarReais(cartao.valorCentavos) : '—'}</td>
+      <td><div class="tags">${tagSituacao(cartao.situacao)}${cartao.pessoa.ativa ? '' : etiqueta('Inativa', 'off')}</div></td>
+      <td class="muted pequeno">${e(cartao.pixTexto)}</td>
+      <td class="envio">${envio || '<span class="muted">—</span>'}</td>
+      <td><div class="acoes">${acoes}</div>${modal}</td>
+    </tr>`;
+}
+
+export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string): string {
+  const emAberto = cartoes
+    .filter((cartao) => cartao.situacao === 'aberta' || cartao.situacao === 'atrasada')
+    .reduce((soma, cartao) => soma + cartao.valorCentavos, 0);
+  const pessoas = cartoes.length === 1 ? '1 pessoa' : `${cartoes.length} pessoas`;
+  const corpo = cartoes.length
+    ? `${cartoes.map((cartao) => linhaQuemDeve(cartao, csrfToken)).join('')}
+       <tr data-filtro-vazio hidden><td colspan="7" class="muted">Nenhuma pessoa encontrada com esse filtro.</td></tr>`
+    : '<tr><td colspan="7" class="muted">Nenhuma pessoa cadastrada.</td></tr>';
+  return `<div class="topo"><div><h1>Quem deve</h1><p class="sub">Todas as pessoas com a cobrança mais recente de cada uma.</p></div>
+    <div class="filtros-lista">
+      <label><span class="sr">Buscar pessoa</span><input type="search" placeholder="Buscar pessoa" data-filtro-busca autocomplete="off"></label>
+      <label><span class="sr">Situação</span><select data-filtro-situacao>
+        <option value="">Situação: todas</option>
+        <option value="aberta">Em aberto</option>
+        <option value="atrasada">Atrasada</option>
+        <option value="paga">Paga</option>
+        <option value="sem_cobranca">Sem cobrança</option>
+        <option value="inativa">Inativa</option>
+      </select></label>
+      <a class="botao" href="/pessoas/nova">Nova pessoa</a>
+    </div></div>
+    <div class="bloco tabela-bloco">
+      <table class="tabela-pessoas">
+        <thead><tr><th>Pessoa</th><th>Competência</th><th class="num">Valor mais recente</th><th>Situação</th><th>PIX</th><th>Envio</th><th>Ações</th></tr></thead>
+        <tbody>${corpo}</tbody>
+        <tfoot><tr><td colspan="7"><strong class="dinheiro ciano">${formatarReais(emAberto)}</strong> em aberto · ${e(pessoas)}</td></tr></tfoot>
+      </table>
+    </div>`;
 }
 
 export function paginaPessoa(
@@ -699,7 +1082,7 @@ export function paginaDetalhe(detalhe: Detalhe, csrfToken: string, motivo = ''):
       <td class="dinheiro">${formatarReais(pix.valorCentavos)}</td>
       <td>${e(pix.status)}</td><td>${pix.validadeDias} dias</td>
       <td>${e(formatarDataHora(pix.venceEm))}</td>
-      <td>${e(pix.mpStatus ?? '')}</td><td>${e(pix.motivo ?? '')}</td>
+      <td>${pix.provedor === 'nativo' ? 'PIX nativo' : `Mercado Pago${pix.mpStatus ? ` · ${e(pix.mpStatus)}` : ''}`}</td><td>${e(pix.motivo ?? '')}</td>
     </tr>`).join('');
   const eventos = detalhe.eventos.map((evento) => `<li>${e(evento.efeito)} · ${formatarReais(evento.valorCentavos)} · ${e(formatarDataHora(evento.recebidoEm))}</li>`).join('');
   const afetadas = detalhe.linhasAfetadas.map((linha) => `${linha.descricao} (${String(linha.mes).padStart(2, '0')}/${linha.ano})`).join(', ');
@@ -716,7 +1099,7 @@ export function paginaDetalhe(detalhe: Detalhe, csrfToken: string, motivo = ''):
         ${detalhe.pixAtivo ? `<div class="bloco"><h2>PIX ativo</h2><p>Vence em ${e(formatarDataHora(detalhe.pixAtivo.venceEm))} · <span class="dinheiro">${formatarReais(detalhe.pixAtivo.valorCentavos)}</span></p>
           <textarea id="pix-copia" class="codigo" readonly>${e(detalhe.pixAtivo.copia)}</textarea></div>` : '<p>Sem PIX ativo.</p>'}
         <div class="bloco"><h2>Histórico de PIX</h2>
-        <table><thead><tr><th>Valor</th><th>Status</th><th>Validade</th><th>Vencimento</th><th>Mercado Pago</th><th>Motivo</th></tr></thead><tbody>${pixes}</tbody></table></div>
+        <table><thead><tr><th>Valor</th><th>Status</th><th>Validade</th><th>Vencimento</th><th>Provedor</th><th>Motivo</th></tr></thead><tbody>${pixes}</tbody></table></div>
         <section class="bloco"><h2>Mensagens</h2>${timelineMensagens(detalhe)}</section>
       </div>
       <aside class="lateral">
@@ -728,10 +1111,26 @@ export function paginaDetalhe(detalhe: Detalhe, csrfToken: string, motivo = ''):
     ${modaisAcaoDetalhe(detalhe, csrfToken, motivo)}`;
 }
 
+function modalPreviaTemplate(previsao: { canal: string; tipo: string; assunto: string; corpo: string }): string {
+  const titulo = `${NOMES_CANAL[previsao.canal] ?? previsao.canal} · ${NOMES_TIPO[previsao.tipo] ?? previsao.tipo}`;
+  return `<dialog class="modal modal-mensagem" id="modal-previa-template" data-modal-inicial>
+    <div class="modal-corpo">
+      <header class="modal-cabeca">
+        <h2>Pré-visualização</h2>
+        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+      </header>
+      <p class="muted">${e(titulo)}. Dados fictícios, de ninguém cadastrado. O texto não foi salvo.</p>
+      ${previsao.assunto ? `<p class="mensagem-assunto"><span class="muted">Assunto</span><br><strong>${e(previsao.assunto)}</strong></p>` : ''}
+      <pre class="mensagem-previa">${e(previsao.corpo)}</pre>
+      <div class="acoes modal-rodape"><button type="button" class="secundario modal-fechar">Fechar</button></div>
+    </div>
+  </dialog>`;
+}
+
 export function paginaTemplates(
   modelos: TemplateLinha[],
   csrfToken: string,
-  previsao: { titulo: string; assunto: string; corpo: string } | null,
+  previsao: { canal: string; tipo: string; assunto: string; corpo: string } | null,
   rascunho: RascunhoTemplate | null = null,
 ): string {
   const blocos = modelos.map((modelo) => {
@@ -739,45 +1138,34 @@ export function paginaTemplates(
     const editando = rascunho?.destino === 'bloco' && rascunho.canal === modelo.canal && rascunho.tipo === modelo.tipo;
     const assunto = editando && rascunho ? rascunho.assunto : (modelo.assunto ?? '');
     const corpo = editando && rascunho ? rascunho.corpo : modelo.corpo;
+    const caminho = `/templates/${e(modelo.canal)}/${e(modelo.tipo)}`;
     return `<section class="bloco">
-      <form method="post" action="/templates/${e(modelo.canal)}/${e(modelo.tipo)}">
+      <form method="post" action="${caminho}">
         ${csrf(csrfToken)}
         <h2>${e(NOMES_CANAL[modelo.canal] ?? modelo.canal)} · ${e(NOMES_TIPO[modelo.tipo] ?? modelo.tipo)}</h2>
         <p class="muted">Variáveis: ${e(variaveisDoCenario(tipo).map((nome) => `{${nome}}`).join(', '))}</p>
         ${modelo.canal === 'email' ? `<label>Assunto<input name="assunto" value="${e(assunto)}"></label>` : ''}
         <label>Texto<textarea name="corpo">${e(corpo)}</textarea></label>
-        <div class="acoes"><button type="submit">Salvar</button></div>
-      </form>
-      <form method="post" action="/templates/${e(modelo.canal)}/${e(modelo.tipo)}/prever">${csrf(csrfToken)}
-        <input type="hidden" name="assunto" value="${e(modelo.assunto ?? '')}">
-        <input type="hidden" name="corpo_atual" value="1">
-        <div class="acoes"><button class="secundario" type="submit" formaction="/templates/${e(modelo.canal)}/${e(modelo.tipo)}/restaurar">Restaurar padrão</button></div>
+        <div class="acoes">
+          <button type="submit">Salvar</button>
+          <button class="secundario" type="submit" formaction="${caminho}/prever">Pré-visualizar</button>
+          <button class="secundario" type="submit" formaction="${caminho}/restaurar">Restaurar padrão</button>
+        </div>
       </form>
     </section>`;
   }).join('');
-  const previa = previsao
-    ? `<section class="bloco"><h2>Pré-visualização · ${e(previsao.titulo)}</h2><p class="muted">Dados fictícios, de ninguém cadastrado.</p>
-      ${previsao.assunto ? `<p><strong>${e(previsao.assunto)}</strong></p>` : ''}<pre>${e(previsao.corpo)}</pre></section>`
-    : '';
-  const previaRascunho = rascunho?.destino === 'previa' ? rascunho : null;
-  const opcao = (valor: string, rotulo: string, atual: string | undefined) =>
-    `<option value="${valor}" ${atual === valor ? 'selected' : ''}>${rotulo}</option>`;
-  return `<h1>Templates</h1><p class="sub">Seis textos: e-mail e WhatsApp para cobrança, confirmação e inadimplência.</p>
-    ${previa}
-    <form class="bloco" method="post" action="/templates/prever">${csrf(csrfToken)}
-      <h2>Pré-visualizar um rascunho</h2>
-      <div class="row">
-        <label>Canal<select name="canal">${opcao('whatsapp', 'WhatsApp', previaRascunho?.canal)}${opcao('email', 'E-mail', previaRascunho?.canal)}</select></label>
-        <label>Cenário<select name="tipo">${opcao('cobranca', 'Cobrança', previaRascunho?.tipo)}${opcao('confirmacao', 'Confirmação', previaRascunho?.tipo)}${opcao('inadimplencia', 'Inadimplência', previaRascunho?.tipo)}</select></label>
-      </div>
-      <label>Assunto<input name="assunto" value="${e(previaRascunho?.assunto ?? '')}"></label>
-      <label>Texto<textarea name="corpo">${e(previaRascunho?.corpo ?? '')}</textarea></label>
-      <div class="acoes"><button type="submit">Pré-visualizar</button></div>
-    </form>
-    ${blocos}`;
+  return `<h1>Templates</h1>
+    <p class="sub">Seis textos: e-mail e WhatsApp para cobrança, confirmação e inadimplência. Pré-visualizar mostra a mensagem com dados fictícios, sem gravar.</p>
+    ${blocos}
+    ${previsao ? modalPreviaTemplate(previsao) : ''}`;
 }
 
-export function paginaConfiguracao(config: ConfigPublica, csrfToken: string, rascunho: RascunhoConfig | null = null): string {
+export function paginaConfiguracao(
+  config: ConfigPublica,
+  csrfToken: string,
+  rascunho: RascunhoConfig | null = null,
+  errosCampos: Record<string, string> | null = null,
+): string {
   const vista = rascunho
     ? {
         ...config,
@@ -790,21 +1178,53 @@ export function paginaConfiguracao(config: ConfigPublica, csrfToken: string, ras
         smtpRemetenteEmail: rascunho.smtpRemetenteEmail,
         smtpCriptografia: rascunho.smtpCriptografia,
         evolution: { ...config.evolution, url: rascunho.evolutionUrl, instancia: rascunho.evolutionInstance },
+        pix: {
+          provedor: rascunho.pixProvedor === 'nativo' ? 'nativo' as const : 'mercadopago' as const,
+          chave: rascunho.pixChave,
+          recebedor: rascunho.pixRecebedor,
+          cidade: rascunho.pixCidade,
+        },
+        conciliacaoIntervaloMinutos: Number(rascunho.conciliacaoIntervaloMinutos) as ConfigPublica['conciliacaoIntervaloMinutos'],
       }
     : config;
   config = vista;
   const teste = config.evolution.ultimoTesteEm
     ? `${config.evolution.ultimoTesteOk ? 'Conexão encontrada' : 'Falhou'} em ${formatarDataHora(config.evolution.ultimoTesteEm)}. ${config.evolution.ultimoTesteMotivo ?? ''}`
     : 'Ainda não testada.';
+  const inv = (nome: string) => classeCampoInvalido(errosCampos, nome);
+  const opcoesConciliacao = INTERVALOS_CONCILIACAO_MINUTOS.map((minutos) => {
+    const selecionado = config.conciliacaoIntervaloMinutos === minutos ? 'selected' : '';
+    return `<option value="${minutos}" ${selecionado}>${e(ROTULOS_INTERVALO_CONCILIACAO[minutos])}</option>`;
+  }).join('');
+  const ultimaConciliacao = config.conciliacaoUltimaEm
+    ? `Última consulta automática: ${e(formatarDataHora(config.conciliacaoUltimaEm))}.`
+    : config.conciliacaoIntervaloMinutos > 0
+      ? 'Ainda não houve consulta automática desde que o intervalo foi definido.'
+      : '';
   return `<h1>Configuração</h1>
-    <p class="sub">Segredo gravado não volta para a tela. Campo em branco mantém o valor atual.</p>
+    <p class="sub">Segredo gravado não volta para a tela. Campo em branco mantém o valor atual. A senha atual só é necessária para definir uma senha nova.</p>
     <form class="bloco" method="post" action="/configuracao">${csrf(csrfToken)}
       <h2>Acesso</h2>
       <div class="row">
-        <label>Usuário<input name="usuario" required value="${e(config.usuario)}"></label>
-        <label>E-mail do código<input name="email_dono" type="email" required value="${e(config.emailDono)}"></label>
-        <label>Senha atual<input name="senha_atual" type="password" autocomplete="current-password"></label>
-        <label>Senha nova<input name="senha_nova" type="password" autocomplete="new-password"></label>
+        <label${inv('usuario')}>Usuário<input name="usuario" required value="${e(config.usuario)}"></label>
+        <label${inv('email_dono')}>E-mail do código<input name="email_dono" type="email" required value="${e(config.emailDono)}"></label>
+        <label${inv('senha_atual')}>Senha atual<input name="senha_atual" type="password" autocomplete="current-password"></label>
+        <label${inv('senha_nova')}>Senha nova<input name="senha_nova" type="password" autocomplete="new-password"></label>
+      </div>
+      <h2>PIX</h2>
+      <p class="muted">Vale para os próximos PIX emitidos; os já emitidos continuam com o provedor que os gerou. O PIX nativo usa copia e cola estático e a baixa automática lê o extrato do Mercado Pago. Baixa manual continua na cobrança.</p>
+      <div class="row">
+        <label${inv('conciliacao_intervalo_minutos')}>Consulta automática de cobranças em aberto<select name="conciliacao_intervalo_minutos">${opcoesConciliacao}</select></label>
+      </div>
+      <p class="muted">Equivale ao botão do Dashboard: concilia PIX nativo no extrato e consulta PIX pendentes no Mercado Pago. O webhook do MP continua valendo para PIX gerados por lá. ${ultimaConciliacao}</p>
+      <div class="row">
+        <label${inv('pix_provedor')}>Gerar PIX por<select name="pix_provedor">
+          <option value="mercadopago" ${config.pix.provedor === 'mercadopago' ? 'selected' : ''}>Mercado Pago</option>
+          <option value="nativo" ${config.pix.provedor === 'nativo' ? 'selected' : ''}>PIX nativo (copia e cola estático)</option>
+        </select></label>
+        <label${inv('pix_chave')}>Chave PIX<input name="pix_chave" maxlength="77" value="${e(config.pix.chave)}" placeholder="CPF, e-mail, +55... ou chave aleatória" autocomplete="off"></label>
+        <label${inv('pix_recebedor')}>Recebedor<input name="pix_recebedor" maxlength="25" required value="${e(config.pix.recebedor)}"></label>
+        <label${inv('pix_cidade')}>Cidade<input name="pix_cidade" maxlength="15" required value="${e(config.pix.cidade)}"></label>
       </div>
       <h2>Mercado Pago</h2>
       <p>Token: ${config.mpAccessTokenDefinido ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}. Segredo do webhook: ${config.mpWebhookSecretDefinido ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}.</p>
@@ -816,13 +1236,13 @@ export function paginaConfiguracao(config: ConfigPublica, csrfToken: string, ras
       <h2>SMTP</h2>
       <p>Senha: ${config.smtpSenhaDefinida ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}.</p>
       <div class="row">
-        <label>Host<input name="smtp_host" value="${e(config.smtpHost)}"></label>
-        <label>Porta<input name="smtp_porta" value="${e(config.smtpPorta)}" placeholder="587"></label>
-        <label>Usuário<input name="smtp_usuario" value="${e(config.smtpUsuario)}"></label>
-        <label>Senha<input name="smtp_senha" type="password" autocomplete="off"></label>
-        <label>Nome do remetente<input name="smtp_remetente_nome" value="${e(config.smtpRemetenteNome)}"></label>
-        <label>E-mail do remetente<input name="smtp_remetente_email" value="${e(config.smtpRemetenteEmail)}"></label>
-        <label>Criptografia<select name="smtp_criptografia">
+        <label${inv('smtp_host')}>Host<input name="smtp_host" value="${e(config.smtpHost)}"></label>
+        <label${inv('smtp_porta')}>Porta<input name="smtp_porta" value="${e(config.smtpPorta)}" placeholder="587"></label>
+        <label${inv('smtp_usuario')}>Usuário<input name="smtp_usuario" value="${e(config.smtpUsuario)}"></label>
+        <label${inv('smtp_senha')}>Senha<input name="smtp_senha" type="password" autocomplete="off"></label>
+        <label${inv('smtp_remetente_nome')}>Nome do remetente<input name="smtp_remetente_nome" value="${e(config.smtpRemetenteNome)}"></label>
+        <label${inv('smtp_remetente_email')}>E-mail do remetente<input name="smtp_remetente_email" value="${e(config.smtpRemetenteEmail)}"></label>
+        <label${inv('smtp_criptografia')}>Criptografia<select name="smtp_criptografia">
           <option value="starttls" ${config.smtpCriptografia === 'starttls' ? 'selected' : ''}>STARTTLS</option>
           <option value="tls_implicito" ${config.smtpCriptografia === 'tls_implicito' ? 'selected' : ''}>TLS implícito</option>
           <option value="nenhuma" ${config.smtpCriptografia === 'nenhuma' ? 'selected' : ''}>Sem criptografia</option>
@@ -838,9 +1258,9 @@ export function paginaConfiguracao(config: ConfigPublica, csrfToken: string, ras
       <h2>Evolution Go</h2>
       <p>Chave API: ${config.evolution.chaveDefinida ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}. ${e(teste)}</p>
       <div class="row">
-        <label>URL<input name="evolution_url" value="${e(config.evolution.url)}" placeholder="https://evolution.example"></label>
-        <label>Instância<input name="evolution_instance" value="${e(config.evolution.instancia)}"></label>
-        <label>Chave API<input name="evolution_api_key" type="password" autocomplete="off"></label>
+        <label${inv('evolution_url')}>URL<input name="evolution_url" value="${e(config.evolution.url)}" placeholder="https://evolution.example"></label>
+        <label${inv('evolution_instance')}>Instância<input name="evolution_instance" value="${e(config.evolution.instancia)}"></label>
+        <label${inv('evolution_api_key')}>Chave API<input name="evolution_api_key" type="password" autocomplete="off"></label>
       </div>
       <p class="muted">O teste usa o Evolution já salvo. Salve antes se alterou URL, instância ou chave.</p>
       <div class="acoes">

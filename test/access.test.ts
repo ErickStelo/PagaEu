@@ -115,8 +115,18 @@ test('template, segredo e telas do painel', async () => {
       sessao.pedir('GET', '/templates'),
       sessao.pedir('GET', '/configuracao'),
       sessao.pedir('GET', '/pessoas/nova'),
+      sessao.pedir('GET', '/quem-deve'),
+      sessao.pedir('GET', '/?de=2026-01&ate=2026-03'),
     ]);
     assert.equal(paginas.every((pagina) => pagina.status === 200), true);
+    assert.match(paginas[0]!.texto, /<h1>Dashboard<\/h1>/);
+    assert.match(paginas[0]!.texto, /Consultar cobranças abertas/);
+    assert.match(paginas[0]!.texto, /action="\/lote"/);
+    assert.match(paginas[2]!.texto, /formaction="\/templates\/email\/cobranca\/prever"/);
+    assert.equal(paginas[2]!.texto.includes('Pré-visualizar um rascunho'), false);
+    assert.match(paginas[5]!.texto, /<h1>Quem deve<\/h1>/);
+    assert.match(paginas[5]!.texto, /data-filtro-situacao/);
+    assert.match(paginas[6]!.texto, /Competências de 01\/2026 a 03\/2026/);
     const configuracao = paginas[3]!.texto;
     for (const segredo of ['mp-token-teste', 'whsec-teste', 'smtp-segredo', 'chave-super-secreta', 'segredo-teste']) {
       assert.equal(configuracao.includes(segredo), false, segredo);
@@ -125,6 +135,18 @@ test('template, segredo e telas do painel', async () => {
     assert.equal(configuracao.includes(hash.rows[0]!.senha_painel_hash), false);
     assert.match(configuracao, /definido: sim/);
     assert.match(configuracao, /evolution\.example/);
+    assert.match(configuracao, /name="conciliacao_intervalo_minutos"/);
+    const previa = await sessao.pedir('POST', '/templates/email/cobranca/prever', {
+      csrf: csrf(paginas[2]!.texto),
+      assunto: 'Cobrança de {competencia}',
+      corpo: 'Olá {nome}. Total: R$ {total}',
+    });
+    assert.equal(previa.status, 200);
+    assert.match(previa.texto, /modal-previa-template/);
+    assert.match(previa.texto, /Maria Exemplo/);
+    assert.match(previa.texto, /Cobrança de 03\/2026/);
+    assert.match(previa.texto, /Total: R\$ 1\.150,00/);
+    assert.match(previa.texto, /<textarea name="corpo">Olá \{nome\}\. Total: R\$ \{total\}<\/textarea>/);
     const token = csrf(paginas[4]!.texto);
     const pessoa = await sessao.pedir('POST', '/pessoas', {
       csrf: token,
@@ -176,7 +198,7 @@ test('template, segredo e telas do painel', async () => {
     const avisoAjax = JSON.parse(ajax.texto) as { ok: boolean; aviso: string; html?: string };
     assert.equal(avisoAjax.ok, false);
     assert.match(avisoAjax.aviso, /O início não pode ser posterior ao fim/);
-    assert.equal(avisoAjax.html, undefined);
+    assert.match(avisoAjax.html ?? '', /value="10,00"/);
     const salvos = await app().pool.query('SELECT id FROM item WHERE pessoa_id = $1', [id]);
     assert.equal(salvos.rows.length, 0);
     const direto = await salvarItem(app(), id, null, {
@@ -243,6 +265,55 @@ test('saúde responde sem sessão', async () => {
     const resposta = await fetch(`${servidor.base}/health`);
     assert.equal(resposta.status, 200);
     assert.equal(await resposta.text(), '{"ok":true}');
+  } finally {
+    await servidor.fechar();
+  }
+});
+
+test('configuração do PIX fica no painel sem exigir senha atual', async () => {
+  app().env.loginCodeDisabled = true;
+  const servidor = await ouvir();
+  try {
+    const sessao = new SessaoHttp(servidor.base);
+    await sessao.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' });
+    const tela = await sessao.pedir('GET', '/configuracao');
+    assert.match(tela.texto, /<h2>PIX<\/h2>/);
+    assert.match(tela.texto, /value="Erick Vinicius Stelo"/);
+    assert.match(tela.texto, /value="Passo Fundo"/);
+    const base = {
+      csrf: csrf(tela.texto),
+      usuario: 'dono',
+      email_dono: 'dono@example.com',
+      smtp_host: 'smtp.example',
+      smtp_porta: '587',
+      smtp_usuario: 'smtp-user',
+      smtp_remetente_nome: 'PagaEu',
+      smtp_remetente_email: 'cobranca@example.com',
+      smtp_criptografia: 'starttls',
+      evolution_url: 'http://evolution.example',
+      evolution_instance: 'pagaeu',
+      pix_provedor: 'nativo',
+      pix_recebedor: 'Erick Vinicius Stelo',
+      pix_cidade: 'Passo Fundo',
+    };
+    const semChave = await sessao.pedir('POST', '/configuracao', { ...base, pix_chave: '' });
+    assert.equal(semChave.status, 422);
+    assert.match(semChave.texto, /Informe a chave PIX/);
+    assert.match(semChave.texto, /class="invalido"[^>]*>Chave PIX/);
+    const salvo = await sessao.pedir('POST', '/configuracao', { ...base, pix_chave: 'erick@example.com' });
+    assert.equal(salvo.status, 303);
+    const trocaSenha = await sessao.pedir('POST', '/configuracao', {
+      ...base,
+      pix_chave: 'erick@example.com',
+      senha_nova: 'outra-senha-forte',
+    });
+    assert.equal(trocaSenha.status, 422);
+    assert.match(trocaSenha.texto, /Informe a senha atual/);
+    const gravado = await app().pool.query<{ pix_provedor: string; pix_chave: string }>(
+      'SELECT pix_provedor, pix_chave FROM configuracao WHERE id = 1',
+    );
+    assert.equal(gravado.rows[0]?.pix_provedor, 'nativo');
+    assert.equal(gravado.rows[0]?.pix_chave, 'erick@example.com');
   } finally {
     await servidor.fechar();
   }

@@ -10,6 +10,7 @@ export type StatusPix =
 
 export type AcoesCobranca = {
   baixaManual: boolean;
+  reabrir: boolean;
   cancelar: boolean;
   novoPix: boolean;
   invalidarPix: boolean;
@@ -22,10 +23,14 @@ export function acoesDisponiveis(entrada: {
   temAtivaPosterior: boolean;
   temPixAtivo: boolean;
   ultimoPix: StatusPix | null;
+  quitadaPorCascata: boolean;
+  competenciaPrincipal: boolean;
 }): AcoesCobranca {
   const aberta = entrada.status === 'aberta';
+  const paga = entrada.status === 'paga';
   return {
     baixaManual: aberta && entrada.vigente,
+    reabrir: paga && entrada.competenciaPrincipal && !entrada.temAtivaPosterior && !entrada.quitadaPorCascata,
     cancelar: aberta && !entrada.temAtivaPosterior,
     novoPix:
       aberta &&

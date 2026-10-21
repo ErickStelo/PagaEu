@@ -3,6 +3,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { after, before, beforeEach, test } from 'node:test';
 import { receberWebhook } from '../src/webhook.ts';
 import { detalharCobranca, linhasAfetadas, montarPainel } from '../src/consultas.ts';
+import { montarDashboard } from '../src/dashboard.ts';
 import {
   baixaManual,
   cancelarCobranca,
@@ -12,14 +13,16 @@ import {
   invalidarPix,
   tentarEmissao,
   consultarCobrancasAbertas,
+  reabrirCobranca,
   verificarPixAtivos,
   type ResultadoGeracao,
 } from '../src/cobrancas.ts';
 import { civilParaUtc } from '../src/domain/calendar.ts';
 import { CORPO_COBRANCA } from '../src/domain/template.ts';
-import { executarAgendado, executarJobDiario } from '../src/job.ts';
+import { executarAgendado, executarConciliacaoAutomatica, executarJobDiario } from '../src/job.ts';
 import { criarPessoa, definirAtiva, obterPessoa, salvarItem, atualizarPessoa } from '../src/pessoas.ts';
-import { csrf, encerrar, evolution, fixar, limpar, mp, ouvir, poolFora, preparar, SessaoHttp, totalCentavos, agora, app, correio } from './suporte.ts';
+import { conciliarPixNativos } from '../src/conciliacaoPix.ts';
+import { csrf, encerrar, evolution, fixar, limpar, mp, ouvir, poolFora, preparar, SessaoHttp, totalCentavos, agora, app, correio, usarPixNativo } from './suporte.ts';
 
 type CobrancaLinha = {
   id: string;
@@ -98,6 +101,143 @@ beforeEach(async () => {
 
 after(async () => {
   await encerrar();
+});
+
+test('provedor nativo gera copia e cola sem gateway e segue no WhatsApp', async () => {
+  const pessoaId = await criarAna();
+  await usarPixNativo('erick@example.com');
+  fixar(sp(2026, 3, 31));
+  const gerada = exigir(await gerarCobranca(app(), pessoaId, 2026, 3, 'manual', agora));
+  assert.equal(gerada.pixOk, true);
+  assert.equal(mp.criacoes.length, 0);
+  const pix = await app().pool.query<{ provedor: string; copia_e_cola: string; mp_payment_id: string | null; status_local: string }>(
+    'SELECT provedor, copia_e_cola, mp_payment_id, status_local FROM pix WHERE cobranca_id = $1',
+    [gerada.cobrancaId],
+  );
+  const linha = pix.rows[0]!;
+  assert.equal(linha.provedor, 'nativo');
+  assert.equal(linha.mp_payment_id, null);
+  assert.equal(linha.status_local, 'pendente');
+  assert.match(linha.copia_e_cola, /^000201.*br\.gov\.bcb\.pix.*54071150\.00.*0509ANA032026.*6304[0-9A-F]{4}$/);
+  assert.equal(evolution.enviados.at(-1)?.text, linha.copia_e_cola);
+  assert.match(evolution.enviados.at(-2)?.text ?? '', /Olá/);
+
+  await verificarPixAtivos(app(), agora);
+  assert.equal(mp.criacoes.length, 0);
+
+  const invalidado = await invalidarPix(app(), gerada.cobrancaId, agora);
+  assert.equal(invalidado.ok, true);
+  assert.equal(mp.cancelamentos.length, 0);
+  const novo = await gerarNovoPix(app(), gerada.cobrancaId, agora);
+  assert.equal(novo.ok, true);
+
+  const baixa = await baixaManual(app(), gerada.cobrancaId, 'invalidar', agora);
+  assert.equal(baixa.ok, true);
+  const status = await app().pool.query<{ status: string }>('SELECT status FROM cobranca WHERE id = $1', [gerada.cobrancaId]);
+  assert.equal(status.rows[0]?.status, 'paga');
+  assert.equal(mp.criacoes.length, 0);
+});
+
+test('conciliação automática baixa PIX nativo pelo TxId no Mercado Pago', async () => {
+  const pessoaId = await criarAna();
+  await usarPixNativo('erick@example.com');
+  fixar(sp(2026, 3, 31));
+  const gerada = exigir(await gerarCobranca(app(), pessoaId, 2026, 3, 'manual', agora));
+  const txid = await app().pool.query<{ txid: string }>('SELECT txid FROM pix WHERE cobranca_id = $1', [gerada.cobrancaId]);
+  const identificador = txid.rows[0]?.txid ?? 'ANA032026';
+  mp.entradasPix = [
+    {
+      id: 'mp-conc-1',
+      valorCentavos: 115_000,
+      txid: identificador,
+      dateApproved: sp(2026, 3, 31, 9),
+    },
+  ];
+  const resultado = await conciliarPixNativos(app(), agora);
+  assert.equal(resultado.conciliadas, 1);
+  const cobranca = await app().pool.query<{ status: string }>('SELECT status FROM cobranca WHERE id = $1', [gerada.cobrancaId]);
+  assert.equal(cobranca.rows[0]?.status, 'paga');
+  assert.equal(correio.enviados.some((item) => item.subject.includes('Pagamento recebido')), true);
+});
+
+test('reabrir cobrança paga permite conciliar de novo', async () => {
+  const pessoaId = await criarAna();
+  await usarPixNativo('erick@example.com');
+  fixar(sp(2026, 3, 31));
+  const gerada = exigir(await gerarCobranca(app(), pessoaId, 2026, 3, 'manual', agora));
+  const txid = await app().pool.query<{ txid: string }>('SELECT txid FROM pix WHERE cobranca_id = $1', [gerada.cobrancaId]);
+  mp.entradasPix = [
+    {
+      id: 'mp-reabrir',
+      valorCentavos: 115_000,
+      txid: txid.rows[0]?.txid ?? 'ANA032026',
+      dateApproved: sp(2026, 3, 31, 9),
+    },
+  ];
+  assert.equal((await consultarCobrancasAbertas(app(), agora)).pagas, 1);
+  assert.equal((await reabrirCobranca(app(), gerada.cobrancaId, agora)).ok, true);
+  assert.equal((await cobrancasDe(pessoaId))[0]?.status, 'aberta');
+  const deNovo = await consultarCobrancasAbertas(app(), agora);
+  assert.equal(deNovo.pagas, 1);
+});
+
+test('dashboard separa em aberto, atrasada e recebida sem contar duas vezes', async () => {
+  const pessoaId = await criarAna();
+  fixar(sp(2026, 3, 31));
+  const gerada = exigir(await gerarCobranca(app(), pessoaId, 2026, 3, 'manual', agora));
+  const marco = { inicio: { ano: 2026, mes: 3 }, fim: { ano: 2026, mes: 3 } };
+  const noPrazo = await montarDashboard(app(), marco, agora);
+  assert.equal(noPrazo.totais.aberta.quantidade, 1);
+  assert.equal(noPrazo.totais.aberta.valorCentavos, 115_000);
+  assert.equal(noPrazo.meses.length, 6);
+  const depois = await montarDashboard(app(), marco, sp(2026, 4, 25));
+  assert.equal(depois.totais.atrasada.quantidade, 1);
+  assert.equal(depois.atrasadas[0]?.cobrancaId, gerada.cobrancaId);
+  const painel = await montarPainel(app(), sp(2026, 4, 25));
+  assert.equal(painel[0]?.situacao, 'atrasada');
+  const pix = (await app().pool.query<{ mp_payment_id: string }>('SELECT mp_payment_id FROM pix WHERE cobranca_id = $1', [gerada.cobrancaId])).rows[0]!;
+  mp.aprovar(pix.mp_payment_id, agora);
+  await verificarPixAtivos(app(), agora);
+  const pago = await montarDashboard(app(), marco, agora);
+  assert.equal(pago.totais.paga.quantidade, 1);
+  assert.equal(pago.totais.aberta.quantidade + pago.totais.atrasada.quantidade, 0);
+  assert.equal(pago.taxaRecebimento, 1);
+  assert.equal((await montarPainel(app(), agora))[0]?.situacao, 'paga');
+});
+
+test('consultar cobranças abertas concilia PIX nativo pelo painel', async () => {
+  const pessoaId = await criarAna();
+  await usarPixNativo('erick@example.com');
+  fixar(sp(2026, 3, 31));
+  const gerada = exigir(await gerarCobranca(app(), pessoaId, 2026, 3, 'manual', agora));
+  const txid = await app().pool.query<{ txid: string }>('SELECT txid FROM pix WHERE cobranca_id = $1', [gerada.cobrancaId]);
+  mp.entradasPix = [
+    {
+      id: 'mp-conc-painel',
+      valorCentavos: 115_000,
+      txid: txid.rows[0]?.txid ?? 'ANA032026',
+      dateApproved: sp(2026, 3, 31, 9),
+    },
+  ];
+  correio.enviados.length = 0;
+  const resultado = await consultarCobrancasAbertas(app(), agora);
+  assert.equal(resultado.conciliacao.conciliadas, 1);
+  assert.equal(resultado.pagas, 1);
+  assert.equal((await cobrancasDe(pessoaId))[0]?.status, 'paga');
+});
+
+test('provedor nativo sem chave falha a emissão com motivo claro', async () => {
+  const pessoaId = await criarAna();
+  await usarPixNativo(null);
+  fixar(sp(2026, 3, 31));
+  const gerada = exigir(await gerarCobranca(app(), pessoaId, 2026, 3, 'manual', agora));
+  assert.equal(gerada.pixOk, false);
+  const pix = await app().pool.query<{ status_local: string; motivo: string }>('SELECT status_local, motivo FROM pix WHERE cobranca_id = $1', [gerada.cobrancaId]);
+  assert.equal(pix.rows[0]?.status_local, 'falha_emissao');
+  assert.match(pix.rows[0]?.motivo ?? '', /Chave PIX não configurada/);
+  await usarPixNativo('erick@example.com');
+  const retentativa = await tentarEmissao(app(), gerada.cobrancaId, agora);
+  assert.equal(retentativa.ok, true);
 });
 
 test('rolagem da Ana não soma os meses de novo', async () => {
@@ -636,6 +776,29 @@ test('troca de dia, canal com falha e padrão da pessoa nova', async () => {
   assert.deepEqual(soWhatsapp.rows.map((linha) => linha.canal), ['whatsapp']);
 });
 
+test('consulta automática de cobranças respeita o intervalo da configuração', async () => {
+  const alvo = app();
+  await alvo.pool.query(`DELETE FROM agendamento WHERE nome = 'conciliacao'`);
+  await alvo.pool.query('UPDATE configuracao SET conciliacao_intervalo_minutos = 0');
+  await executarConciliacaoAutomatica(alvo, agora);
+  assert.equal((await alvo.pool.query(`SELECT 1 FROM agendamento WHERE nome = 'conciliacao'`)).rowCount, 0);
+
+  await alvo.pool.query('UPDATE configuracao SET conciliacao_intervalo_minutos = 60');
+  await executarConciliacaoAutomatica(alvo, agora);
+  assert.equal((await alvo.pool.query(`SELECT 1 FROM agendamento WHERE nome = 'conciliacao'`)).rowCount, 1);
+
+  await executarConciliacaoAutomatica(alvo, agora);
+  assert.equal((await alvo.pool.query(`SELECT 1 FROM agendamento WHERE nome = 'conciliacao'`)).rowCount, 1);
+
+  const depois = new Date(agora.getTime() + 61 * 60_000);
+  await executarConciliacaoAutomatica(alvo, depois);
+  const ultima = await alvo.pool.query<{ atualizado_em: Date }>(
+    `SELECT atualizado_em FROM agendamento WHERE nome = 'conciliacao'`,
+  );
+  assert.equal(ultima.rowCount, 1);
+  assert.equal(ultima.rows[0]!.atualizado_em.getTime(), depois.getTime());
+});
+
 test('banco fora no job não envia mensagem e o minuto falho pode repetir', async () => {
   const fora = poolFora();
   try {
@@ -648,19 +811,19 @@ test('banco fora no job não envia mensagem e o minuto falho pode repetir', asyn
   const pessoaId = await criarAna();
   fixar(sp(2026, 3, 31));
   const alvo = app();
-  const original = alvo.pool.query.bind(alvo.pool);
+  const queryOriginal = alvo.pool.query.bind(alvo.pool);
   let falhou = false;
-  alvo.pool.query = ((...args: Parameters<typeof original>) => {
+  alvo.pool.query = ((...args: Parameters<typeof queryOriginal>) => {
     if (!falhou) {
       falhou = true;
       return Promise.reject(new Error('banco caiu'));
     }
-    return original(...args);
+    return queryOriginal(...args);
   }) as typeof alvo.pool.query;
   try {
     await assert.rejects(() => executarAgendado(alvo), /banco caiu/);
   } finally {
-    alvo.pool.query = original;
+    alvo.pool.query = queryOriginal;
   }
   assert.equal((await cobrancasDe(pessoaId)).length, 0);
   const chaveAntes = await app().pool.query(`SELECT ultima_chave FROM agendamento WHERE nome = 'diario'`);

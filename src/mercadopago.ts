@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { centavosParaReais, reaisParaCentavos } from './domain/money.ts';
-import type { EntradaPix, MercadoPagoGateway, PagamentoRemoto } from './gateways.ts';
+import { normalizarTxid } from './domain/pix.ts';
+import type { EntradaPix, MercadoPagoGateway, PagamentoRemoto, PixRecebidoMp } from './gateways.ts';
 import { mensagemErro, redigir } from './texto.ts';
 
 const API = 'https://api.mercadopago.com';
@@ -140,6 +141,112 @@ function motivoResposta(corpo: unknown, token: string): { motivo: string; errorC
   return { motivo: redigir(texto, [token]), errorCode: codigo };
 }
 
+function dataBuscaMp(data: Date): string {
+  return data.toISOString();
+}
+
+function extrairTxidPagamento(corpo: Record<string, unknown>): string | null {
+  const detalhes = corpo.transaction_details;
+  if (detalhes && typeof detalhes === 'object') {
+    const id = (detalhes as { transaction_id?: unknown }).transaction_id;
+    if (typeof id === 'string') return normalizarTxid(id);
+  }
+  const ponto = corpo.point_of_interaction;
+  if (ponto && typeof ponto === 'object') {
+    const dados = (ponto as { transaction_data?: unknown }).transaction_data;
+    if (dados && typeof dados === 'object') {
+      const registro = dados as { transaction_id?: unknown; bank_transfer_id?: unknown };
+      if (typeof registro.transaction_id === 'string') return normalizarTxid(registro.transaction_id);
+      if (typeof registro.bank_transfer_id === 'string') return normalizarTxid(registro.bank_transfer_id);
+    }
+  }
+  const descricao = corpo.description;
+  if (typeof descricao === 'string') {
+    const achado = descricao.match(/\b[A-Z0-9]{6,25}\b/);
+    if (achado) return normalizarTxid(achado[0]);
+  }
+  return null;
+}
+
+function reembolsoTotal(corpo: Record<string, unknown>): number {
+  const lista = corpo.refunds;
+  if (!Array.isArray(lista)) return 0;
+  let total = 0;
+  for (const item of lista) {
+    if (!item || typeof item !== 'object') continue;
+    const valor = valorDoCampo((item as { amount?: unknown }).amount);
+    if (Number.isFinite(valor)) total += valor;
+  }
+  return reaisParaCentavos(total);
+}
+
+export function lerPagamentoPixRecebido(corpo: Record<string, unknown>): PixRecebidoMp | null {
+  if (corpo.status !== 'approved') return null;
+  if (corpo.payment_method_id !== 'pix') return null;
+  if (corpo.currency_id && corpo.currency_id !== 'BRL') return null;
+  const operacao = corpo.operation_type;
+  if (operacao === 'money_transfer' && corpo.payer_id && corpo.collector_id && corpo.payer_id === corpo.collector_id) {
+    return null;
+  }
+  const idBruto = corpo.id;
+  if (typeof idBruto !== 'string' && typeof idBruto !== 'number') return null;
+  const valorBruto = valorDoCampo(corpo.transaction_amount);
+  if (!Number.isFinite(valorBruto) || valorBruto <= 0) return null;
+  const valorCentavos = reaisParaCentavos(valorBruto);
+  const reembolsado = reembolsoTotal(corpo);
+  if (reembolsado >= valorCentavos) return null;
+  const aprovadoBruto = corpo.date_approved ?? corpo.date_created;
+  if (typeof aprovadoBruto !== 'string') return null;
+  const dateApproved = new Date(aprovadoBruto);
+  if (Number.isNaN(dateApproved.getTime())) return null;
+  return {
+    id: String(idBruto),
+    valorCentavos: reembolsado > 0 ? valorCentavos - reembolsado : valorCentavos,
+    txid: extrairTxidPagamento(corpo),
+    dateApproved,
+  };
+}
+
+async function buscarPagamentos(token: string, inicio: Date, fim: Date): Promise<PixRecebidoMp[] | { motivo: string }> {
+  const entradas: PixRecebidoMp[] = [];
+  const vistos = new Set<string>();
+  const limite = 50;
+  for (let offset = 0; offset < 1_000; offset += limite) {
+    const params = new URLSearchParams({
+      sort: 'date_created',
+      criteria: 'desc',
+      range: 'date_created',
+      begin_date: dataBuscaMp(inicio),
+      end_date: dataBuscaMp(fim),
+      status: 'approved',
+      payment_method_id: 'pix',
+      limit: String(limite),
+      offset: String(offset),
+    });
+    const resposta = await fetch(`${API}/v1/payments/search?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(20_000),
+    });
+    const corpo = await lerJson(resposta);
+    if (!resposta.ok || !corpo || typeof corpo !== 'object') {
+      return { motivo: motivoResposta(corpo, token).motivo };
+    }
+    const resultados = (corpo as { results?: unknown }).results;
+    if (!Array.isArray(resultados) || resultados.length === 0) break;
+    for (const item of resultados) {
+      if (!item || typeof item !== 'object') continue;
+      const entrada = lerPagamentoPixRecebido(item as Record<string, unknown>);
+      if (!entrada || vistos.has(entrada.id)) continue;
+      vistos.add(entrada.id);
+      entradas.push(entrada);
+    }
+    const total = (corpo as { paging?: { total?: number } }).paging?.total;
+    if (typeof total === 'number' && offset + limite >= total) break;
+    if (resultados.length < limite) break;
+  }
+  return entradas;
+}
+
 async function lerJson(resposta: Response): Promise<unknown> {
   try {
     return await resposta.json();
@@ -195,6 +302,15 @@ export function criarMercadoPago(): MercadoPagoGateway {
         const pagamento = lerOrdem(corpo as Record<string, unknown>);
         if (!pagamento) return { ok: false, motivo: 'Consulta do Mercado Pago sem pagamento.' };
         return { ok: true, pagamento };
+      } catch (erro) {
+        return { ok: false, motivo: redigir(mensagemErro(erro), [token]) };
+      }
+    },
+    async buscarPixRecebidos(token, inicio, fim) {
+      try {
+        const resultado = await buscarPagamentos(token, inicio, fim);
+        if ('motivo' in resultado) return { ok: false, motivo: resultado.motivo };
+        return { ok: true, entradas: resultado };
       } catch (erro) {
         return { ok: false, motivo: redigir(mensagemErro(erro), [token]) };
       }

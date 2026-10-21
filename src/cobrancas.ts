@@ -1,21 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { App } from './app.ts';
-import { carregarTokenMp } from './configuracao.ts';
+import { carregarPix, carregarTokenMp, type ProvedorPix } from './configuracao.ts';
 import { comTravaPessoa, consultar, transacao, type Cliente, type Consultavel } from './db.ts';
 import { acoesDisponiveis, mpPermiteCancelar, type StatusCobranca, type StatusPix } from './domain/acoes.ts';
-import {
-  diaEfetivo,
-  formatarCompetencia,
-  formatarExpiracaoMp,
-  partesNoFuso,
-  somarDias,
-} from './domain/calendar.ts';
+import { diaEfetivo, formatarCompetencia, partesNoFuso, somarDias } from './domain/calendar.ts';
 import { comporLinhas, type LinhaRascunho } from './domain/composicao.ts';
-import { centavosParaReais } from './domain/money.ts';
-import { urlNotificacaoEnviavel } from './env.ts';
 import type { PagamentoRemoto } from './gateways.ts';
 import { enviarMensagem } from './mensagens.ts';
-import { mensagemErro, primeiroNome, redigir } from './texto.ts';
+import { emitirPix } from './provedoresPix.ts';
+import { mensagemErro } from './texto.ts';
 
 export type OrigemGeracao = 'job' | 'manual' | 'lote';
 
@@ -40,6 +33,8 @@ export type Cobranca = {
 type Pix = {
   id: string;
   cobranca_id: string;
+  provedor: ProvedorPix;
+  txid: string | null;
   mp_payment_id: string | null;
   idempotency_key: string;
   valor_centavos: number;
@@ -135,6 +130,25 @@ export async function vigenteDaPessoa(cliente: Consultavel, pessoaId: string): P
     cliente,
     `SELECT * FROM cobranca c
      WHERE c.pessoa_id = $1 AND c.status = 'aberta'
+       AND NOT EXISTS (
+         SELECT 1 FROM cobranca posterior
+         WHERE posterior.pessoa_id = c.pessoa_id
+           AND posterior.status IN ('aberta', 'paga')
+           AND (posterior.competencia_ano, posterior.competencia_mes) > (c.competencia_ano, c.competencia_mes)
+       )
+     ORDER BY c.competencia_ano DESC, c.competencia_mes DESC
+     LIMIT 1`,
+    [pessoaId],
+  );
+  return linhas[0] ?? null;
+}
+
+/** Última competência em aberto ou paga, sem mês posterior ativo. */
+export async function principalDaPessoa(cliente: Consultavel, pessoaId: string): Promise<Cobranca | null> {
+  const linhas = await consultar<Cobranca>(
+    cliente,
+    `SELECT * FROM cobranca c
+     WHERE c.pessoa_id = $1 AND c.status IN ('aberta', 'paga')
        AND NOT EXISTS (
          SELECT 1 FROM cobranca posterior
          WHERE posterior.pessoa_id = c.pessoa_id
@@ -311,34 +325,35 @@ async function pixAtivosAnteriores(cliente: Consultavel, cabecaId: string): Prom
 }
 
 async function aplicarRemoto(cliente: Cliente, pix: Pix, remoto: PagamentoRemoto, agora: Date): Promise<Efeito> {
+  const mpId = pix.mp_payment_id ?? remoto.id;
   await cliente.query(
-    `UPDATE pix SET mp_status = $2, mp_status_detail = $3, verificado_em = $4 WHERE id = $1`,
-    [pix.id, remoto.status, remoto.statusDetail, agora],
+    `UPDATE pix SET mp_payment_id = COALESCE(mp_payment_id, $2), mp_status = $3, mp_status_detail = $4, verificado_em = $5 WHERE id = $1`,
+    [pix.id, remoto.id, remoto.status, remoto.statusDetail, agora],
   );
   const vazio: Efeito = { tipo: 'inalterado', confirmacaoId: null, ancestrais: [] };
   if (remoto.status === 'approved') {
     const cobranca = await cobrancaPorId(cliente, pix.cobranca_id);
-    if (!cobranca || !pix.mp_payment_id) return vazio;
+    if (!cobranca || !mpId) return vazio;
     if (remoto.valorCentavos !== pix.valor_centavos) {
-      await registrarEvento(cliente, pix.mp_payment_id, 'divergencia_valor', cobranca.id, remoto.valorCentavos, remoto.dateApproved ?? agora);
+      await registrarEvento(cliente, mpId, 'divergencia_valor', cobranca.id, remoto.valorCentavos, remoto.dateApproved ?? agora);
       return { tipo: 'divergencia', confirmacaoId: null, ancestrais: [] };
     }
     if (cobranca.status === 'paga') {
-      if (await eventoExiste(cliente, pix.mp_payment_id, 'baixa')) return { tipo: 'repetido', confirmacaoId: null, ancestrais: [] };
-      await registrarEvento(cliente, pix.mp_payment_id, 'excedente', cobranca.id, remoto.valorCentavos, remoto.dateApproved ?? agora);
+      if (await eventoExiste(cliente, mpId, 'baixa')) return { tipo: 'repetido', confirmacaoId: null, ancestrais: [] };
+      await registrarEvento(cliente, mpId, 'excedente', cobranca.id, remoto.valorCentavos, remoto.dateApproved ?? agora);
       await cliente.query(`UPDATE pix SET status_local = 'aprovado' WHERE id = $1`, [pix.id]);
       return { tipo: 'excedente', confirmacaoId: null, ancestrais: [] };
     }
     if (cobranca.status === 'cancelada') {
       await cliente.query(`UPDATE pix SET status_local = 'aprovado' WHERE id = $1`, [pix.id]);
-      await registrarEvento(cliente, pix.mp_payment_id, 'excedente', cobranca.id, remoto.valorCentavos, remoto.dateApproved ?? agora);
+      await registrarEvento(cliente, mpId, 'excedente', cobranca.id, remoto.valorCentavos, remoto.dateApproved ?? agora);
       return { tipo: 'excedente', confirmacaoId: null, ancestrais: [] };
     }
     const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
     const quando = remoto.dateApproved ?? agora;
     await quitarCadeia(cliente, cobranca, quando, 'pagamento');
     await cliente.query(`UPDATE pix SET status_local = 'aprovado', motivo = NULL WHERE id = $1`, [pix.id]);
-    await registrarEvento(cliente, pix.mp_payment_id, 'baixa', cobranca.id, pix.valor_centavos, quando);
+    await registrarEvento(cliente, mpId, 'baixa', cobranca.id, pix.valor_centavos, quando);
     const quitouVigente = vigente?.id === cobranca.id;
     if (!quitouVigente) await marcarAlertas(cliente, cobranca.pessoa_id);
     return {
@@ -409,6 +424,34 @@ export async function sincronizarPagamento(
   return comTravaPessoa(app.pool, pessoaId, (cliente) => sincronizarNaTrava(app, cliente, mpId, agora));
 }
 
+export async function baixarPixNativoConciliado(
+  app: App,
+  pixId: string,
+  pessoaId: string,
+  entrada: { mpPaymentId: string; valorCentavos: number; aprovadoEm: Date },
+  agora: Date,
+): Promise<{ tipo: Efeito['tipo']; confirmacao: 'enviada' | 'falha' | 'sem_canal' | 'nao'; motivo: string | null }> {
+  return comTravaPessoa(app.pool, pessoaId, async (cliente) => {
+    const pix = await pixPorId(cliente, pixId);
+    if (!pix || pix.provedor !== 'nativo') {
+      return { tipo: 'inalterado', confirmacao: 'nao', motivo: null };
+    }
+    const duplicado = await eventoExiste(cliente, entrada.mpPaymentId, 'baixa')
+      || await eventoExiste(cliente, entrada.mpPaymentId, 'excedente');
+    if (duplicado) return { tipo: 'repetido', confirmacao: 'nao', motivo: null };
+    const remoto: PagamentoRemoto = {
+      id: entrada.mpPaymentId,
+      status: 'approved',
+      statusDetail: 'accredited',
+      valorCentavos: entrada.valorCentavos,
+      dateApproved: entrada.aprovadoEm,
+    };
+    const efeito = await transacao(cliente, () => aplicarRemoto(cliente, pix, remoto, agora));
+    const confirmacao = await concluirEfeito(app, cliente, efeito, agora, new Set());
+    return { tipo: efeito.tipo, confirmacao: confirmacao.estado, motivo: confirmacao.motivo };
+  });
+}
+
 async function invalidarUmPix(app: App, cliente: Cliente, pixId: string, agora: Date, emCurso: Set<string>): Promise<'cancelado' | 'ja_encerrado' | 'pago' | 'falha'> {
   if (emCurso.has(pixId)) return 'falha';
   emCurso.add(pixId);
@@ -420,6 +463,15 @@ async function invalidarUmPix(app: App, cliente: Cliente, pixId: string, agora: 
       await cliente.query(`UPDATE pix SET motivo = COALESCE(motivo, 'já encerrado') WHERE id = $1`, [pix.id]);
     });
     return 'ja_encerrado';
+  }
+  if (pix.provedor === 'nativo' && (pix.status_local === 'pendente' || pix.status_local === 'falha_cancelamento')) {
+    await transacao(cliente, async () => {
+      await cliente.query(
+        `UPDATE pix SET status_local = 'cancelado', motivo = NULL, verificado_em = $2 WHERE id = $1`,
+        [pix.id, agora],
+      );
+    });
+    return 'cancelado';
   }
   if ((pix.status_local !== 'pendente' && pix.status_local !== 'falha_cancelamento') || !pix.mp_payment_id) {
     await transacao(cliente, async () => {
@@ -527,6 +579,7 @@ async function concluirEmissao(
   cliente: Cliente,
   entrada: {
     pixId: string;
+    provedor: ProvedorPix;
     chave: string;
     pessoa: PessoaCobranca;
     cobrancaId: string;
@@ -537,51 +590,32 @@ async function concluirEmissao(
     agora: Date;
   },
 ): Promise<boolean> {
-  const token = await carregarTokenMp(cliente);
-  if (!token) {
-    await falharEmissao(cliente, entrada.pixId, 'Mercado Pago não configurado', entrada.agora);
-    return false;
-  }
-  if (!app.env.publicUrl) {
-    await falharEmissao(cliente, entrada.pixId, 'URL pública não configurada', entrada.agora);
-    return false;
-  }
-  let criado;
-  try {
-    criado = await app.mp.criar(token, {
-      idempotencyKey: entrada.chave,
-      transactionAmount: centavosParaReais(entrada.total),
-      description: `${formatarCompetencia(entrada.ano, entrada.mes)} ${entrada.pessoa.nome}`.slice(0, 200),
-      payerEmail: entrada.pessoa.email,
-      payerFirstName: primeiroNome(entrada.pessoa.nome),
-      payerCpf: entrada.pessoa.cpf,
-      dateOfExpiration: formatarExpiracaoMp(entrada.vence),
-      notificationUrl: urlNotificacaoEnviavel(app.env.publicUrl),
-      externalReference: entrada.cobrancaId,
-    });
-  } catch (erro) {
-    await falharEmissao(cliente, entrada.pixId, redigir(mensagemErro(erro), [token]), entrada.agora);
-    return false;
-  }
-  if (!criado.ok) {
-    await falharEmissao(cliente, entrada.pixId, criado.motivo, entrada.agora);
-    return false;
-  }
-  const aceito = criado.status === 'pending' || criado.status === 'in_process' || criado.status === 'authorized' || criado.status === 'approved';
-  if (!aceito) {
-    await falharEmissao(cliente, entrada.pixId, `Mercado Pago devolveu status ${criado.status}.`, entrada.agora);
+  const emitido = await emitirPix(app, cliente, entrada.provedor, entrada);
+  if (!emitido.ok) {
+    await falharEmissao(cliente, entrada.pixId, emitido.motivo, entrada.agora);
     return false;
   }
   await transacao(cliente, async () => {
     await cliente.query(
       `UPDATE pix
        SET mp_payment_id = $2, status_local = 'pendente', mp_status = $3, mp_status_detail = $4,
-           copia_e_cola = $5, ticket_url = $6, verificado_em = $7, motivo = NULL
+           copia_e_cola = $5, ticket_url = $6, verificado_em = $7, motivo = NULL, txid = $8
        WHERE id = $1`,
-      [entrada.pixId, criado.id, criado.status, criado.statusDetail, criado.qrCode, criado.ticketUrl, entrada.agora],
+      [
+        entrada.pixId,
+        emitido.mpPaymentId,
+        emitido.mpStatus,
+        emitido.mpStatusDetail,
+        emitido.copiaECola,
+        emitido.ticketUrl,
+        entrada.agora,
+        emitido.txid,
+      ],
     );
   });
-  if (criado.status === 'approved') await sincronizarNaTrava(app, cliente, criado.id, entrada.agora);
+  if (emitido.mpPaymentId && emitido.mpStatus === 'approved') {
+    await sincronizarNaTrava(app, cliente, emitido.mpPaymentId, entrada.agora);
+  }
   return true;
 }
 
@@ -659,6 +693,7 @@ export async function gerarCobranca(
     if (rascunhos.length === 0 || total <= 0) return { ok: false, aviso: 'nenhum item para este mês' };
     const pixId = randomUUID();
     const chave = randomUUID();
+    const { provedor } = await carregarPix(cliente);
     const vence = somarDias(agora, pessoa.validade_pix_dias);
     try {
       await transacao(cliente, async () => {
@@ -678,9 +713,9 @@ export async function gerarCobranca(
           );
         }
         await cliente.query(
-          `INSERT INTO pix (id, cobranca_id, idempotency_key, valor_centavos, validade_dias, vence_em, status_local)
-           VALUES ($1,$2,$3,$4,$5,$6,'emitindo')`,
-          [pixId, cobrancaId, chave, total, pessoa.validade_pix_dias, vence],
+          `INSERT INTO pix (id, cobranca_id, provedor, idempotency_key, valor_centavos, validade_dias, vence_em, status_local)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'emitindo')`,
+          [pixId, cobrancaId, provedor, chave, total, pessoa.validade_pix_dias, vence],
         );
         await marcarAlertas(cliente, pessoaId);
       });
@@ -688,7 +723,7 @@ export async function gerarCobranca(
       if (codigoPg(erro) === '23505') return { ok: false, aviso: `já existe cobrança em ${formatarCompetencia(ano, mes)}` };
       throw erro;
     }
-    const pixOk = await concluirEmissao(app, cliente, { pixId, chave, pessoa, cobrancaId, ano, mes, total, vence, agora });
+    const pixOk = await concluirEmissao(app, cliente, { pixId, provedor, chave, pessoa, cobrancaId, ano, mes, total, vence, agora });
     if (pixOk) await enviarMensagem(app, cliente, cobrancaId, 'cobranca', agora);
     if (anterior) {
       const aindaAtivo = await pixAtivo(cliente, anterior.id);
@@ -842,8 +877,58 @@ export async function cancelarCobranca(
   });
 }
 
+export async function reabrirCobranca(
+  app: App,
+  cobrancaId: string,
+  agora = app.clock(),
+): Promise<{ ok: true } | { ok: false; aviso: string }> {
+  const dona = await consultar<{ pessoa_id: string }>(app.pool, 'SELECT pessoa_id FROM cobranca WHERE id = $1', [cobrancaId]);
+  const pessoaId = dona[0]?.pessoa_id;
+  if (!pessoaId) return { ok: false, aviso: 'Cobrança não encontrada.' };
+  return comTravaPessoa(app.pool, pessoaId, async (cliente) => {
+    const cobranca = await cobrancaPorId(cliente, cobrancaId);
+    if (!cobranca) return { ok: false, aviso: 'Cobrança não encontrada.' };
+    if (cobranca.status !== 'paga') return { ok: false, aviso: 'Só cobrança paga pode ser reaberta.' };
+    if (cobranca.quitada_por_id) {
+      return { ok: false, aviso: 'Esta cobrança foi quitada em cascata por outra competência e não pode ser reaberta aqui.' };
+    }
+    const principal = await principalDaPessoa(cliente, cobranca.pessoa_id);
+    if (principal?.id !== cobranca.id) {
+      return { ok: false, aviso: 'Só a cobrança da competência principal (a mais recente em aberto ou paga) pode ser reaberta.' };
+    }
+    await transacao(cliente, async () => {
+      await cliente.query(`DELETE FROM evento_pagamento WHERE cobranca_id = $1 AND efeito = 'baixa'`, [cobranca.id]);
+      await cliente.query(
+        `UPDATE cobranca
+         SET status = 'aberta', paga_em = NULL, origem_baixa = NULL, quitada_por_id = NULL, alerta_itens_ja_pagos = false
+         WHERE id = $1`,
+        [cobranca.id],
+      );
+      await cliente.query(
+        `UPDATE cobranca
+         SET status = 'aberta', paga_em = NULL, origem_baixa = NULL, quitada_por_id = NULL
+         WHERE quitada_por_id = $1 AND origem_baixa = 'cascata'`,
+        [cobranca.id],
+      );
+      await cliente.query(
+        `UPDATE pix
+         SET status_local = 'pendente',
+             mp_status = NULL,
+             mp_status_detail = NULL,
+             motivo = NULL,
+             mp_payment_id = CASE WHEN provedor = 'nativo' THEN NULL ELSE mp_payment_id END,
+             verificado_em = $2
+         WHERE cobranca_id = $1 AND status_local = 'aprovado'`,
+        [cobranca.id, agora],
+      );
+    });
+    return { ok: true };
+  });
+}
+
 async function estadoParaAcoes(cliente: Consultavel, cobranca: Cobranca) {
   const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
+  const principal = await principalDaPessoa(cliente, cobranca.pessoa_id);
   const posterior = await ativaPosterior(cliente, cobranca.pessoa_id, cobranca.competencia_ano, cobranca.competencia_mes);
   const ativo = await pixAtivo(cliente, cobranca.id);
   const ultimo = await ultimoPix(cliente, cobranca.id);
@@ -853,6 +938,8 @@ async function estadoParaAcoes(cliente: Consultavel, cobranca: Cobranca) {
     temAtivaPosterior: Boolean(posterior),
     temPixAtivo: Boolean(ativo),
     ultimoPix: ultimo?.status_local ?? null,
+    quitadaPorCascata: Boolean(cobranca.quitada_por_id),
+    competenciaPrincipal: principal?.id === cobranca.id,
   });
 }
 
@@ -872,16 +959,18 @@ export async function gerarNovoPix(app: App, cobrancaId: string, agora = app.clo
     if (total <= 0) return { ok: false, aviso: 'A cobrança não tem valor para um PIX.' };
     const pixId = randomUUID();
     const chave = randomUUID();
+    const { provedor } = await carregarPix(cliente);
     const vence = somarDias(agora, pessoa.validade_pix_dias);
     await transacao(cliente, async () => {
       await cliente.query(
-        `INSERT INTO pix (id, cobranca_id, idempotency_key, valor_centavos, validade_dias, vence_em, status_local)
-         VALUES ($1,$2,$3,$4,$5,$6,'emitindo')`,
-        [pixId, cobranca.id, chave, total, pessoa.validade_pix_dias, vence],
+        `INSERT INTO pix (id, cobranca_id, provedor, idempotency_key, valor_centavos, validade_dias, vence_em, status_local)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'emitindo')`,
+        [pixId, cobranca.id, provedor, chave, total, pessoa.validade_pix_dias, vence],
       );
     });
     await concluirEmissao(app, cliente, {
       pixId,
+      provedor,
       chave,
       pessoa,
       cobrancaId: cobranca.id,
@@ -915,6 +1004,7 @@ export async function tentarEmissao(app: App, cobrancaId: string, agora = app.cl
     });
     const ok = await concluirEmissao(app, cliente, {
       pixId: pix.id,
+      provedor: pix.provedor,
       chave: pix.idempotency_key,
       pessoa,
       cobrancaId: cobranca.id,
@@ -950,9 +1040,40 @@ export type ResultadoConsultaAbertas = {
   semCanal: number;
   falhaConfirmacao: number;
   falhas: string[];
+  conciliacao: {
+    pendentes: number;
+    entradasMp: number;
+    conciliadas: number;
+    confirmacoes: number;
+  };
 };
 
 export async function consultarCobrancasAbertas(app: App, agora = app.clock()): Promise<ResultadoConsultaAbertas> {
+  const { conciliarPixNativos } = await import('./conciliacaoPix.ts');
+  const resultado: ResultadoConsultaAbertas = {
+    consultadas: 0,
+    pagas: 0,
+    confirmacoes: 0,
+    semCanal: 0,
+    falhaConfirmacao: 0,
+    falhas: [],
+    conciliacao: { pendentes: 0, entradasMp: 0, conciliadas: 0, confirmacoes: 0 },
+  };
+  try {
+    const nativo = await conciliarPixNativos(app, agora);
+    resultado.conciliacao = {
+      pendentes: nativo.pendentes,
+      entradasMp: nativo.consultadas,
+      conciliadas: nativo.conciliadas,
+      confirmacoes: nativo.confirmacoes,
+    };
+    resultado.pagas += nativo.conciliadas;
+    resultado.confirmacoes += nativo.confirmacoes;
+    resultado.falhas.push(...nativo.falhas);
+  } catch (erro) {
+    console.error(`Falha na conciliação de PIX nativo: ${mensagemErro(erro)}`);
+    resultado.falhas.push(mensagemErro(erro));
+  }
   const alvos = await consultar<{ mp_payment_id: string; nome: string }>(
     app.pool,
     `SELECT px.mp_payment_id, p.nome
@@ -964,14 +1085,6 @@ export async function consultarCobrancasAbertas(app: App, agora = app.clock()): 
        AND px.mp_payment_id IS NOT NULL
      ORDER BY p.nome, c.competencia_ano, c.competencia_mes`,
   );
-  const resultado: ResultadoConsultaAbertas = {
-    consultadas: 0,
-    pagas: 0,
-    confirmacoes: 0,
-    semCanal: 0,
-    falhaConfirmacao: 0,
-    falhas: [],
-  };
   for (const alvo of alvos) {
     try {
       const efeito = await sincronizarPagamento(app, alvo.mp_payment_id, agora);
@@ -992,6 +1105,12 @@ export async function consultarCobrancasAbertas(app: App, agora = app.clock()): 
 }
 
 export async function verificarPixAtivos(app: App, agora = app.clock()): Promise<void> {
+  const { conciliarPixNativos } = await import('./conciliacaoPix.ts');
+  try {
+    await conciliarPixNativos(app, agora);
+  } catch (erro) {
+    console.error(`Falha na conciliação de PIX nativo: ${mensagemErro(erro)}`);
+  }
   const pixes = await consultar<{ id: string; mp_payment_id: string }>(
     app.pool,
     `SELECT id, mp_payment_id FROM pix

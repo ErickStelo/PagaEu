@@ -16,9 +16,12 @@ import {
   type Sessao,
 } from './acesso.ts';
 import { detalharCobranca, listarHistorico, montarPainel } from './consultas.ts';
+import { montarDashboard } from './dashboard.ts';
+import { normalizarPeriodo, type Competencia, type Periodo } from './domain/painel.ts';
 import {
   baixaManual,
   cancelarCobranca,
+  reabrirCobranca,
   consultarCobrancasAbertas,
   gerarCobranca,
   gerarLote,
@@ -71,6 +74,8 @@ import {
   paginaItens,
   paginaLogin,
   paginaPessoa,
+  modalResultadoConsultaPagamentos,
+  paginaDashboard,
   paginaQuemDeve,
   paginaTemplates,
   type RascunhoItem,
@@ -221,14 +226,16 @@ function json(ctx: Ctx, status: number, corpo: Record<string, unknown>): void {
 
 function html(ctx: Ctx, status: number, titulo: string, corpo: string, flash: Flash | null): void {
   if (pedidoAjax(ctx)) {
-    if (status >= 400) {
-      json(ctx, status, {
-        ok: false,
-        aviso: flash?.texto || (status === 403 ? 'Ação recusada.' : 'Não foi possível concluir.'),
-      });
-      return;
+    const aviso = flash?.texto || (status === 403 ? 'Ação recusada.' : status >= 400 ? 'Não foi possível concluir.' : '');
+    const payload: Record<string, unknown> = {
+      ok: status < 400 && flash?.tipo !== 'erro',
+      aviso,
+    };
+    if (corpo) {
+      payload.html = corpo;
+      payload.titulo = titulo;
     }
-    json(ctx, status, { ok: flash?.tipo !== 'erro', aviso: flash?.texto ?? '', html: corpo, titulo });
+    json(ctx, status, payload);
     return;
   }
   if (ctx.sessao) definirCookie(ctx, 'pagaeu_sessao', ctx.sessao.id, 12 * 60 * 60);
@@ -290,16 +297,32 @@ function contar(quantidade: number, um: string, varios: string): string {
 }
 
 function textoConsulta(resultado: ResultadoConsultaAbertas): string {
-  if (resultado.consultadas === 0 && resultado.falhas.length === 0) return 'Nenhuma cobrança aberta com PIX pendente.';
-  const linhas = [contar(resultado.consultadas, 'cobrança consultada.', 'cobranças consultadas.')];
-  linhas.push(
-    resultado.pagas === 0
-      ? 'Nenhuma passou a constar como paga.'
-      : contar(resultado.pagas, 'passou a constar como paga.', 'passaram a constar como pagas.'),
-  );
-  if (resultado.confirmacoes) linhas.push(contar(resultado.confirmacoes, 'confirmação de pagamento enviada.', 'confirmações de pagamento enviadas.'));
-  if (resultado.semCanal) linhas.push(contar(resultado.semCanal, 'quitada sem canal de confirmação ligado.', 'quitadas sem canal de confirmação ligado.'));
+  const linhas: string[] = [];
+  const { conciliacao: c } = resultado;
+  if (c.pendentes > 0 || c.conciliadas > 0 || c.entradasMp > 0) {
+    linhas.push(
+      `PIX nativo: ${c.conciliadas} quitada(s) de ${c.pendentes} pendente(s); ${c.entradasMp} entrada(s) nova(s) no extrato Mercado Pago.`,
+    );
+  }
+  if (resultado.consultadas > 0) {
+    linhas.push(contar(resultado.consultadas, 'PIX do gateway consultado.', 'PIX do gateway consultados.'));
+  }
+  if (resultado.pagas > 0) {
+    linhas.push(contar(resultado.pagas, 'cobrança quitada.', 'cobranças quitadas.'));
+  } else if (resultado.consultadas > 0 || c.pendentes > 0) {
+    linhas.push('Nenhuma cobrança nova quitada nesta consulta.');
+  }
+  if (resultado.confirmacoes) {
+    linhas.push(contar(resultado.confirmacoes, 'confirmação de pagamento enviada.', 'confirmações de pagamento enviadas.'));
+  }
+  if (resultado.semCanal) {
+    linhas.push(contar(resultado.semCanal, 'quitada sem canal de confirmação ligado.', 'quitadas sem canal de confirmação ligado.'));
+  }
+  if (resultado.falhaConfirmacao) {
+    linhas.push(contar(resultado.falhaConfirmacao, 'quitada com falha ao enviar confirmação.', 'quitadas com falha ao enviar confirmação.'));
+  }
   linhas.push(...resultado.falhas);
+  if (!linhas.length) return 'Nada a atualizar: sem PIX pendente para consultar ou conciliar.';
   return linhas.join('\n');
 }
 
@@ -431,32 +454,40 @@ rota('POST', '/sair', async (ctx) => {
 rota('GET', '/', async (ctx) => {
   if (!ctx.sessao) return redirecionar(ctx, '/login');
   const flash = await pegarFlash(ctx.app, ctx.sessao.id);
-  const hoje = partesNoFuso(ctx.app.clock());
-  const corpo = paginaQuemDeve(
-    await montarPainel(ctx.app),
-    ctx.sessao.csrf,
-    `${String(hoje.day).padStart(2, '0')}/${String(hoje.month).padStart(2, '0')}/${hoje.year}`,
-  );
-  html(ctx, 200, 'Quem deve', corpo, flash);
+  const periodo = normalizarPeriodo(ctx.url.searchParams.get('de'), ctx.url.searchParams.get('ate'), competenciaAtual(ctx));
+  html(ctx, 200, 'Dashboard', await corpoDashboard(ctx, { periodo }), flash);
+});
+
+rota('GET', '/quem-deve', async (ctx) => {
+  if (!ctx.sessao) return redirecionar(ctx, '/login');
+  const flash = await pegarFlash(ctx.app, ctx.sessao.id);
+  html(ctx, 200, 'Quem deve', paginaQuemDeve(await montarPainel(ctx.app), ctx.sessao.csrf), flash);
 });
 
 rota('POST', '/cobrancas/consultar', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const resultado = await consultarCobrancasAbertas(ctx.app);
-  await flashERedireciona(ctx, '/', { tipo: resultado.falhas.length ? 'erro' : 'ok', texto: textoConsulta(resultado) });
+  const falhaGrave = resultado.falhas.length > 0 && resultado.pagas === 0;
+  if (pedidoAjax(ctx)) {
+    json(ctx, falhaGrave ? 422 : 200, {
+      ok: !falhaGrave,
+      html: await corpoDashboard(ctx, { modalConsulta: modalResultadoConsultaPagamentos(resultado) }),
+      titulo: 'Dashboard',
+      abrirModal: 'modal-consulta-cobrancas',
+    });
+    return;
+  }
+  await flashERedireciona(ctx, '/', { tipo: falhaGrave ? 'erro' : 'ok', texto: textoConsulta(resultado) });
 });
 
 rota('POST', '/lote', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const resultado = await gerarLote(ctx.app, inteiro(ctx.form.get('ano')), inteiro(ctx.form.get('mes')));
   if (resultado.recusado) {
-    return html(
-      ctx,
-      422,
-      'Quem deve',
-      paginaQuemDeve(await montarPainel(ctx.app), ctx.sessao.csrf, dataHoje(ctx), rascunhoMes(ctx)),
-      { tipo: 'erro', texto: textoLote(resultado) },
-    );
+    return html(ctx, 422, 'Dashboard', await corpoDashboard(ctx, { geracao: rascunhoMes(ctx) }), {
+      tipo: 'erro',
+      texto: textoLote(resultado),
+    });
   }
   await flashERedireciona(ctx, '/', { tipo: 'ok', texto: textoLote(resultado) });
 });
@@ -611,6 +642,15 @@ rota('POST', '/cobrancas/:id/baixa', async (ctx) => {
   });
 });
 
+rota('POST', '/cobrancas/:id/reabrir', async (ctx) => {
+  if (!ctx.sessao || !csrfConfere(ctx) || !UUID.test(ctx.params.id ?? '')) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
+  const resultado = await reabrirCobranca(ctx.app, ctx.params.id ?? '');
+  await flashERedireciona(ctx, `/cobrancas/${ctx.params.id}`, {
+    tipo: resultado.ok ? 'ok' : 'erro',
+    texto: resultado.ok ? 'Cobrança reaberta. O PIX aprovado voltou a pendente para nova consulta.' : resultado.aviso,
+  });
+});
+
 rota('POST', '/cobrancas/:id/cancelar', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const resultado = await cancelarCobranca(ctx.app, ctx.params.id ?? '', ctx.form.get('motivo') ?? '');
@@ -666,13 +706,13 @@ rota('GET', '/templates', async (ctx) => {
   html(ctx, 200, 'Templates', paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, null), await pegarFlash(ctx.app, ctx.sessao.id));
 });
 
-rota('POST', '/templates/prever', async (ctx) => {
+rota('POST', '/templates/:canal/:tipo/prever', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
-  const canal = ctx.form.get('canal') ?? '';
-  const tipo = ctx.form.get('tipo') ?? '';
-  if (!canalValido(canal) || !tipoValido(tipo)) return html(ctx, 400, 'Templates', '<h1>Template inválido</h1>', null);
+  const canal = ctx.params.canal ?? '';
+  const tipo = ctx.params.tipo ?? '';
+  if (!canalValido(canal) || !tipoValido(tipo)) return html(ctx, 404, 'Templates', '<h1>Template não encontrado</h1>', null);
+  const rascunho = { canal, tipo, assunto: campo(ctx, 'assunto'), corpo: campo(ctx, 'corpo'), destino: 'bloco' as const };
   const previsto = preverTemplate(canal, tipo, ctx.form.get('assunto'), ctx.form.get('corpo') ?? '');
-  const rascunho = { canal, tipo, assunto: campo(ctx, 'assunto'), corpo: campo(ctx, 'corpo'), destino: 'previa' as const };
   if (!previsto.ok) {
     return html(ctx, 422, 'Templates', paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, null, rascunho), {
       tipo: 'erro',
@@ -683,7 +723,12 @@ rota('POST', '/templates/prever', async (ctx) => {
     ctx,
     200,
     'Templates',
-    paginaTemplates(await listarTemplates(ctx.app), ctx.sessao.csrf, { titulo: `${canal} ${tipo}`, assunto: previsto.assunto, corpo: previsto.corpo }, rascunho),
+    paginaTemplates(
+      await listarTemplates(ctx.app),
+      ctx.sessao.csrf,
+      { canal, tipo, assunto: previsto.assunto, corpo: previsto.corpo },
+      rascunho,
+    ),
     null,
   );
 });
@@ -745,9 +790,15 @@ rota('POST', '/configuracao', async (ctx) => {
     evolutionUrl: ctx.form.get('evolution_url') ?? '',
     evolutionInstance: ctx.form.get('evolution_instance') ?? '',
     evolutionApiKey: ctx.form.get('evolution_api_key') ?? '',
+    pixProvedor: ctx.form.get('pix_provedor') ?? 'mercadopago',
+    pixChave: ctx.form.get('pix_chave') ?? '',
+    pixRecebedor: ctx.form.get('pix_recebedor') ?? '',
+    pixCidade: ctx.form.get('pix_cidade') ?? '',
+    conciliacaoIntervaloMinutos: ctx.form.get('conciliacao_intervalo_minutos') ?? '60',
   });
   if (!salvo.ok) {
-    return html(ctx, 422, 'Configuração', paginaConfiguracao(await lerConfigPublica(ctx.app), ctx.sessao.csrf, rascunhoConfig(ctx)), {
+    const errosCampos = salvo.campo ? { [salvo.campo]: salvo.aviso } : null;
+    return html(ctx, 422, 'Configuração', paginaConfiguracao(await lerConfigPublica(ctx.app), ctx.sessao.csrf, rascunhoConfig(ctx), errosCampos), {
       tipo: 'erro',
       texto: salvo.aviso,
     });
@@ -813,12 +864,30 @@ function rascunhoConfig(ctx: Ctx) {
     smtpCriptografia: campo(ctx, 'smtp_criptografia'),
     evolutionUrl: campo(ctx, 'evolution_url'),
     evolutionInstance: campo(ctx, 'evolution_instance'),
+    pixProvedor: campo(ctx, 'pix_provedor'),
+    pixChave: campo(ctx, 'pix_chave'),
+    pixRecebedor: campo(ctx, 'pix_recebedor'),
+    pixCidade: campo(ctx, 'pix_cidade'),
+    conciliacaoIntervaloMinutos: campo(ctx, 'conciliacao_intervalo_minutos'),
   };
 }
 
-function dataHoje(ctx: Ctx): string {
+function competenciaAtual(ctx: Ctx): Competencia {
   const hoje = partesNoFuso(ctx.app.clock());
-  return `${String(hoje.day).padStart(2, '0')}/${String(hoje.month).padStart(2, '0')}/${hoje.year}`;
+  return { ano: hoje.year, mes: hoje.month };
+}
+
+async function corpoDashboard(
+  ctx: Ctx,
+  opcoes: { periodo?: Periodo; geracao?: ReturnType<typeof rascunhoMes>; modalConsulta?: string },
+): Promise<string> {
+  const atual = competenciaAtual(ctx);
+  const periodo = opcoes.periodo ?? { inicio: atual, fim: atual };
+  return paginaDashboard(await montarDashboard(ctx.app, periodo), ctx.sessao?.csrf ?? '', {
+    geracao: opcoes.geracao ?? null,
+    padraoGeracao: atual,
+    modalConsulta: opcoes.modalConsulta ?? null,
+  });
 }
 
 async function htmlPessoa(

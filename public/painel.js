@@ -73,7 +73,6 @@
       location.assign(json.ir);
       return;
     }
-    if (json.aviso) toastr[json.ok ? 'success' : 'error'](json.aviso);
     if (json.html) {
       const main = document.querySelector('main');
       if (main) {
@@ -82,6 +81,13 @@
         main.focus();
       }
       if (json.titulo) document.title = json.titulo + ' · PagaEu';
+      if (json.abrirModal) {
+        abrirModal(json.abrirModal);
+      } else if (json.aviso) {
+        toastr[json.ok ? 'success' : 'error'](json.aviso);
+      }
+    } else if (json.aviso) {
+      toastr[json.ok ? 'success' : 'error'](json.aviso);
     }
     if (json.ir) await navegar(json.ir, true);
   }
@@ -179,14 +185,56 @@
     if (!(form instanceof HTMLFormElement)) return;
     evento.preventDefault();
     const botao = evento.submitter;
-    if (botao) botao.disabled = true;
+    const consulta = (form.getAttribute('action') || '').includes('/cobrancas/consultar');
+    const textoBotao = botao?.textContent;
+    if (botao) {
+      botao.disabled = true;
+      if (consulta) {
+        botao.classList.add('carregando');
+        botao.textContent = 'Consultando…';
+      }
+    }
     enviar(form, botao)
       .catch(() => {
         toastr.error('Não foi possível falar com o servidor.');
       })
       .finally(() => {
-        if (botao && botao.isConnected) botao.disabled = false;
+        if (botao && botao.isConnected) {
+          botao.disabled = false;
+          if (consulta) {
+            botao.classList.remove('carregando');
+            if (textoBotao) botao.textContent = textoBotao;
+          }
+        }
       });
+  });
+
+  function normalizar(texto) {
+    return (texto || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  }
+
+  function filtrarPessoas() {
+    const busca = normalizar(document.querySelector('[data-filtro-busca]')?.value);
+    const situacao = document.querySelector('[data-filtro-situacao]')?.value || '';
+    let visiveis = 0;
+    document.querySelectorAll('tr[data-pessoa]').forEach((linha) => {
+      const nomeOk = !busca || normalizar(linha.getAttribute('data-nome')).includes(busca);
+      const situacaoOk = !situacao
+        || (situacao === 'inativa' ? linha.getAttribute('data-inativa') === '1' : linha.getAttribute('data-situacao') === situacao);
+      const mostrar = nomeOk && situacaoOk;
+      linha.hidden = !mostrar;
+      if (mostrar) visiveis += 1;
+    });
+    const vazio = document.querySelector('[data-filtro-vazio]');
+    if (vazio) vazio.hidden = visiveis > 0;
+  }
+
+  document.addEventListener('input', (evento) => {
+    if (evento.target.closest('[data-filtro-busca]')) filtrarPessoas();
+  });
+
+  document.addEventListener('change', (evento) => {
+    if (evento.target.closest('[data-filtro-situacao]')) filtrarPessoas();
   });
 
   window.addEventListener('popstate', () => {

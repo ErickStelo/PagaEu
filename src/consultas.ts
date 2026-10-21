@@ -1,11 +1,15 @@
 import type { App } from './app.ts';
-import { vigenteDaPessoa } from './cobrancas.ts';
+import { principalDaPessoa, vigenteDaPessoa } from './cobrancas.ts';
 import { consultar } from './db.ts';
 import { acoesDisponiveis, type StatusCobranca, type StatusPix } from './domain/acoes.ts';
 import { diaEfetivo, diasInteirosDesde, formatarCompetencia, partesNoFuso } from './domain/calendar.ts';
+import { situacaoCobranca, type SituacaoCobranca } from './domain/painel.ts';
+import type { ProvedorPix } from './configuracao.ts';
 import type { Pessoa } from './pessoas.ts';
 
 export type Indicador = { resultado: 'enviado' | 'falha'; tentadoEm: Date; motivo: string | null } | null;
+
+export type SituacaoPessoa = SituacaoCobranca | 'sem_cobranca';
 
 export type CartaoPessoa = {
   pessoa: Pessoa;
@@ -13,6 +17,7 @@ export type CartaoPessoa = {
   competencia: string | null;
   valorCentavos: number;
   cobrancaId: string | null;
+  situacao: SituacaoPessoa;
   pixTexto: string;
   copiaPix: string | null;
   podeEmail: boolean;
@@ -30,33 +35,33 @@ export async function montarPainel(app: App, agora = app.clock()): Promise<Carta
   const pessoas = await consultar<Pessoa>(app.pool, 'SELECT * FROM pessoa ORDER BY nome, id');
   const cartoes: CartaoPessoa[] = [];
   for (const pessoa of pessoas) {
-    const vigente = await vigenteDaPessoa(app.pool, pessoa.id);
-    const linhas = vigente
+    const recente = await principalDaPessoa(app.pool, pessoa.id);
+    const linhas = recente
       ? await consultar<{ descricao: string; competencia_origem_ano: number; competencia_origem_mes: number; valor_centavos: number; item_id: string }>(
           app.pool,
           `SELECT descricao, competencia_origem_ano, competencia_origem_mes, valor_centavos, item_id
            FROM linha_cobranca WHERE cobranca_id = $1
            ORDER BY competencia_origem_ano, competencia_origem_mes, descricao`,
-          [vigente.id],
+          [recente.id],
         )
       : [];
-    const afetadas = vigente ? await linhasAfetadas(app, vigente.id) : [];
-    const pix = vigente
+    const afetadas = recente ? await linhasAfetadas(app, recente.id) : [];
+    const pix = recente
       ? await consultar<{ status_local: StatusPix; vence_em: Date; copia_e_cola: string | null }>(
           app.pool,
           `SELECT status_local, vence_em, copia_e_cola FROM pix
-           WHERE cobranca_id = $1 AND status_local IN ('pendente', 'falha_cancelamento')
+           WHERE cobranca_id = $1
            ORDER BY criado_em DESC LIMIT 1`,
-          [vigente.id],
+          [recente.id],
         )
       : [];
-    const envios = vigente
+    const envios = recente
       ? await consultar<{ canal: 'email' | 'whatsapp'; resultado: 'enviado' | 'falha'; tentado_em: Date; motivo: string | null }>(
           app.pool,
           `SELECT DISTINCT ON (canal) canal, resultado, tentado_em, motivo
            FROM envio WHERE cobranca_id = $1 AND tipo = 'cobranca'
            ORDER BY canal, tentado_em DESC`,
-          [vigente.id],
+          [recente.id],
         )
       : [];
     const eventos = await consultar<{ efeito: string }>(
@@ -66,13 +71,12 @@ export async function montarPainel(app: App, agora = app.clock()): Promise<Carta
        WHERE c.pessoa_id = $1 AND e.efeito IN ('excedente', 'divergencia_valor')`,
       [pessoa.id],
     );
-    const ativo = pix[0];
-    let pixTexto = 'sem PIX';
-    if (ativo) {
-      pixTexto = ativo.vence_em.getTime() >= agora.getTime()
-        ? `ativo até ${formatarQuando(ativo.vence_em)}`
-        : textoVencido(ativo.vence_em, agora);
-    }
+    const ultimo = pix[0] ?? null;
+    const ativo = ultimo && (ultimo.status_local === 'pendente' || ultimo.status_local === 'falha_cancelamento') ? ultimo : null;
+    const situacao: SituacaoPessoa = recente
+      ? situacaoCobranca({ status: recente.status, pixStatus: ultimo?.status_local ?? null, pixVenceEm: ultimo?.vence_em ?? null }, agora) ?? 'sem_cobranca'
+      : 'sem_cobranca';
+    const pixTexto = textoPix(recente, ativo, agora);
     const indicador = (canal: 'email' | 'whatsapp'): Indicador => {
       const envio = envios.find((item) => item.canal === canal);
       if (!envio) return null;
@@ -81,16 +85,17 @@ export async function montarPainel(app: App, agora = app.clock()): Promise<Carta
     cartoes.push({
       pessoa,
       diaEfetivo: diaEfetivo(pessoa.dia_cobranca, hoje.year, hoje.month),
-      competencia: vigente ? formatarCompetencia(vigente.competencia_ano, vigente.competencia_mes) : null,
+      competencia: recente ? formatarCompetencia(recente.competencia_ano, recente.competencia_mes) : null,
       valorCentavos: linhas.reduce((soma, linha) => soma + linha.valor_centavos, 0),
-      cobrancaId: vigente?.id ?? null,
+      cobrancaId: recente?.id ?? null,
+      situacao,
       pixTexto,
       copiaPix: ativo?.copia_e_cola ?? null,
-      podeEmail: Boolean(ativo?.copia_e_cola && vigente?.status === 'aberta' && vigente.canal_email_selecionado),
-      podeWhatsapp: Boolean(ativo?.copia_e_cola && vigente?.status === 'aberta' && vigente.canal_whatsapp_selecionado),
+      podeEmail: Boolean(ativo?.copia_e_cola && recente?.status === 'aberta' && recente.canal_email_selecionado),
+      podeWhatsapp: Boolean(ativo?.copia_e_cola && recente?.status === 'aberta' && recente.canal_whatsapp_selecionado),
       email: indicador('email'),
       whatsapp: indicador('whatsapp'),
-      alertaItensPagos: Boolean(vigente?.alerta_itens_ja_pagos) || afetadas.length > 0,
+      alertaItensPagos: Boolean(recente?.alerta_itens_ja_pagos) || afetadas.length > 0,
       linhasAfetadas: afetadas.map((linha) => `${linha.descricao} (${formatarCompetencia(linha.ano, linha.mes)})`),
       excedente: eventos.some((evento) => evento.efeito === 'excedente'),
       divergencia: eventos.some((evento) => evento.efeito === 'divergencia_valor'),
@@ -109,6 +114,21 @@ function formatarQuando(data: Date): string {
     minute: '2-digit',
     hourCycle: 'h23',
   }).format(data);
+}
+
+function textoPix(
+  cobranca: { status: StatusCobranca; paga_em: Date | null } | null,
+  ativo: { vence_em: Date } | null,
+  agora: Date,
+): string {
+  if (!cobranca) return '—';
+  if (cobranca.status === 'paga') return cobranca.paga_em ? `pago em ${formatarDia(cobranca.paga_em)}` : 'pago';
+  if (!ativo) return 'sem PIX ativo';
+  return ativo.vence_em.getTime() >= agora.getTime() ? `ativo até ${formatarQuando(ativo.vence_em)}` : textoVencido(ativo.vence_em, agora);
+}
+
+function formatarDia(data: Date): string {
+  return new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric' }).format(data);
 }
 
 function textoVencido(vence: Date, agora: Date): string {
@@ -287,6 +307,7 @@ export type Detalhe = {
     validadeDias: number;
     venceEm: Date;
     motivo: string | null;
+    provedor: ProvedorPix;
     mpStatus: string | null;
   }[];
   indicadores: {
@@ -311,6 +332,7 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     origem_geracao: string;
     paga_em: Date | null;
     origem_baixa: string | null;
+    quitada_por_id: string | null;
     cancelada_em: Date | null;
     motivo_cancelamento: string | null;
     alerta_itens_ja_pagos: boolean;
@@ -342,6 +364,7 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     validade_dias: number;
     vence_em: Date;
     motivo: string | null;
+    provedor: ProvedorPix;
     mp_status: string | null;
     copia_e_cola: string | null;
   }>(app.pool, `SELECT * FROM pix WHERE cobranca_id = $1 ORDER BY criado_em DESC`, [id]);
@@ -358,6 +381,7 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     [id],
   );
   const vigente = await vigenteDaPessoa(app.pool, cobranca.pessoa_id);
+  const principal = await principalDaPessoa(app.pool, cobranca.pessoa_id);
   const posterior = await consultar<{ id: string }>(
     app.pool,
     `SELECT id FROM cobranca
@@ -373,6 +397,8 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     temAtivaPosterior: posterior.length > 0,
     temPixAtivo: Boolean(ativo),
     ultimoPix: ultimo?.status_local ?? null,
+    quitadaPorCascata: Boolean(cobranca.quitada_por_id),
+    competenciaPrincipal: principal?.id === cobranca.id,
   });
   const tipos = ['cobranca', 'confirmacao', 'inadimplencia'] as const;
   const canais = ['email', 'whatsapp'] as const;
@@ -429,6 +455,7 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
       validadeDias: pix.validade_dias,
       venceEm: pix.vence_em,
       motivo: pix.motivo,
+      provedor: pix.provedor,
       mpStatus: pix.mp_status,
     })),
     indicadores: indicadores.map(({ pode: _pode, ...resto }) => resto),

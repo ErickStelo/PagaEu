@@ -56,7 +56,7 @@ Os nomes são os do `.env.example`. Nenhum valor secreto vem no repositório.
 | `EVOLUTION_GO_API_KEY` | Opcional. Chave global usada para listar instâncias no Evolution Go. |
 | `EVOLUTION_GO_INSTANCE` | Opcional. Nome da instância já existente no Evolution Go. |
 
-Mercado Pago (access token e segredo do webhook) e SMTP ficam só no banco, pela tela **Configuração**. Alterar integrações ou o usuário do painel exige a **senha atual**.
+Mercado Pago (access token e segredo do webhook) e SMTP ficam só no banco, pela tela **Configuração**. Só a troca da **senha do painel** exige informar a senha atual.
 
 O login limita tentativas falhas por IP (bloqueio temporário após várias falhas) e o reenvio do código de acesso é limitado por janela de tempo. O webhook do Mercado Pago exige assinatura HMAC e timestamp recente (10 minutos).
 
@@ -91,9 +91,11 @@ node --env-file-if-exists=.env --experimental-strip-types scripts/simular-webhoo
 
 O agendador olha o relógio a cada 10 segundos, no fuso `America/Sao_Paulo`. Uma trava no banco impede que duas réplicas rodem o mesmo ciclo.
 
-Às 09:00, no minuto zero, o ciclo do dia faz quatro passos, nesta ordem: confere os PIX ainda ativos, gera a cobrança de quem tem o dia efetivo igual a hoje, envia o aviso de inadimplência devido e aplica a troca de dia de cobrança que estava pendente para este mês. O dia cadastrado 31 usa o último dia do mês quando o mês é mais curto.
+Às 09:00, no minuto zero, o ciclo do dia faz três passos, nesta ordem: gera a cobrança de quem tem o dia efetivo igual a hoje, envia o aviso de inadimplência devido e aplica a troca de dia de cobrança que estava pendente para este mês. O dia cadastrado 31 usa o último dia do mês quando o mês é mais curto.
 
-Nas outras horas, também no minuto zero, o ciclo só confere PIX ativos e inadimplência. Não gera cobrança.
+Nas outras horas, também no minuto zero, o ciclo só envia inadimplência devida. Não gera cobrança.
+
+A **consulta de cobranças em aberto** (PIX nativo no extrato + PIX pendentes no Mercado Pago) roda em intervalo configurável em **Configuração** (padrão: 1 hora). Desligada, só o botão do Dashboard, o webhook do MP e o script `npm run testar:conciliacao` consultam.
 
 Se o ciclo falha antes de gravar que aquele minuto já rodou, a tentativa seguinte no mesmo minuto repete o ciclo. Um minuto perdido não é refeito mais tarde.
 
@@ -101,9 +103,11 @@ Quem está inativo não entra no job. Cobrança de outro mês, ou de pessoa inat
 
 ## O que configurar no painel
 
-Em **Configuração**, campo de segredo em branco mantém o valor já gravado. A tela mostra se o segredo está definido e não devolve o valor. Trocar a senha do painel ou o e-mail do código exige a senha atual.
+Em **Configuração**, campo de segredo em branco mantém o valor já gravado. A tela mostra se o segredo está definido e não devolve o valor. Para definir uma senha nova, informe a senha atual e a nova senha.
 
 **Mercado Pago.** Grave o access token e o segredo do webhook. Cada PIX é criado com a URL `{PAGAEU_PUBLIC_URL}/webhooks/mercadopago?source_news=webhooks`, também exibida nessa tela. O aviso que chega nessa URL só é aceito se a assinatura bater com o segredo gravado. Em **Quem deve**, o botão **Consultar cobranças abertas** pergunta ao Mercado Pago o status dos PIX pendentes e quita os que já constam como pagos.
+
+**PIX.** Escolha se o PIX é gerado pelo Mercado Pago ou pelo PIX nativo, e informe chave, recebedor e cidade. Defina também o **intervalo da consulta automática** de cobranças em aberto. A escolha vale para os próximos PIX; cada PIX guarda o provedor que o emitiu. No PIX nativo o copia e cola estático (BR Code) é gerado sem gateway, com o valor da cobrança e o identificador `PRIMEIRONOME` + `MMAAAA` (ex.: `ANA032026`), e segue nas mesmas mensagens de e-mail e WhatsApp. A baixa automática consulta o Mercado Pago (`/v1/payments/search`) por PIX **aprovados** recebidos na conta e concilia pelo **TxId** ou, se for único no mês, pelo **valor exato**. O access token do Mercado Pago precisa estar configurado. Invalidar um PIX nativo só o tira das mensagens; o código estático continua pagável no banco.
 
 **Evolution Go.** URL, instância e chave da API são editáveis no painel (e persistidos no banco). Na primeira subida, se ainda não houver dados gravados, valores opcionais de `EVOLUTION_GO_*` no `.env` são importados uma vez. O botão de teste procura a instância em `GET /instance/all`. O envio de WhatsApp usa o token dessa instância em `POST /send/text`. A instância precisa já estar conectada no Evolution Go. O painel não cria nem pareia instância.
 

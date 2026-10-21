@@ -29,6 +29,13 @@ export type PixCriado = {
   ticketUrl: string | null;
 };
 
+export type PixRecebidoMp = {
+  id: string;
+  valorCentavos: number;
+  txid: string | null;
+  dateApproved: Date;
+};
+
 export type MercadoPagoGateway = {
   criar(token: string, entrada: EntradaPix): Promise<PixCriado | { ok: false; motivo: string }>;
   consultar(token: string, id: string): Promise<{ ok: true; pagamento: PagamentoRemoto } | { ok: false; motivo: string }>;
@@ -36,6 +43,11 @@ export type MercadoPagoGateway = {
     token: string,
     id: string,
   ): Promise<{ ok: true; status: string; statusDetail: string | null } | { ok: false; statusCode: number; errorCode: number | null; motivo: string }>;
+  buscarPixRecebidos(
+    token: string,
+    inicio: Date,
+    fim: Date,
+  ): Promise<{ ok: true; entradas: PixRecebidoMp[] } | { ok: false; motivo: string }>;
 };
 
 export type EvolutionGateway = {

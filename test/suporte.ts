@@ -4,7 +4,15 @@ import { criarAplicacao, type App } from '../src/app.ts';
 import { criarPool } from '../src/db.ts';
 import { reaisParaCentavos } from '../src/domain/money.ts';
 import { lerEnv, type Env } from '../src/env.ts';
-import type { CorreioGateway, EntradaPix, EvolutionGateway, MercadoPagoGateway, PagamentoRemoto, SmtpConfig } from '../src/gateways.ts';
+import type {
+  CorreioGateway,
+  EntradaPix,
+  EvolutionGateway,
+  MercadoPagoGateway,
+  PagamentoRemoto,
+  PixRecebidoMp,
+  SmtpConfig,
+} from '../src/gateways.ts';
 import { criarServidor } from '../src/http.ts';
 import { semearAdmin, semearModelos } from '../src/semente.ts';
 
@@ -18,6 +26,8 @@ export class MercadoPagoFalso implements MercadoPagoGateway {
   falharCriacao = false;
   lancarNaCriacao = false;
   modoCancelamento: 'ok' | 'falha' | '2018' = 'ok';
+  entradasPix: PixRecebidoMp[] = [];
+  falharBuscaPix = false;
 
   reset(): void {
     this.pagamentos.clear();
@@ -27,6 +37,8 @@ export class MercadoPagoFalso implements MercadoPagoGateway {
     this.falharCriacao = false;
     this.lancarNaCriacao = false;
     this.modoCancelamento = 'ok';
+    this.entradasPix = [];
+    this.falharBuscaPix = false;
   }
 
   async criar(_token: string, entrada: EntradaPix) {
@@ -56,6 +68,12 @@ export class MercadoPagoFalso implements MercadoPagoGateway {
     const pagamento = this.pagamentos.get(id);
     if (!pagamento) return { ok: false as const, motivo: 'não encontrado' };
     return { ok: true as const, pagamento };
+  }
+
+  async buscarPixRecebidos(_token: string, inicio: Date, fim: Date) {
+    if (this.falharBuscaPix) return { ok: false as const, motivo: 'busca indisponível' };
+    const entradas = this.entradasPix.filter((item) => item.dateApproved >= inicio && item.dateApproved <= fim);
+    return { ok: true as const, entradas };
   }
 
   async cancelar(_token: string, id: string) {
@@ -200,6 +218,10 @@ export async function limpar(): Promise<void> {
   correio.reset();
   evolution.reset();
   atual.env.loginCodeDisabled = false;
+}
+
+export async function usarPixNativo(chave: string | null): Promise<void> {
+  await app().pool.query(`UPDATE configuracao SET pix_provedor = 'nativo', pix_chave = $1 WHERE id = 1`, [chave]);
 }
 
 export async function encerrar(): Promise<void> {

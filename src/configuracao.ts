@@ -36,7 +36,42 @@ type LinhaConfig = {
   evolution_teste_em: Date | null;
   evolution_teste_ok: boolean | null;
   evolution_teste_motivo: string | null;
+  pix_provedor: ProvedorPix;
+  pix_chave: string | null;
+  pix_recebedor: string;
+  pix_cidade: string;
+  pix_conciliacao_ate: Date | null;
+  conciliacao_intervalo_minutos: number;
 };
+
+export const INTERVALOS_CONCILIACAO_MINUTOS = [0, 15, 30, 60, 360, 1440] as const;
+export type IntervaloConciliacaoMinutos = (typeof INTERVALOS_CONCILIACAO_MINUTOS)[number];
+
+export function intervaloConciliacaoValido(valor: number): boolean {
+  return (INTERVALOS_CONCILIACAO_MINUTOS as readonly number[]).includes(valor);
+}
+
+export const ROTULOS_INTERVALO_CONCILIACAO: Record<IntervaloConciliacaoMinutos, string> = {
+  0: 'Desligada (só manual e webhook do Mercado Pago)',
+  15: 'A cada 15 minutos',
+  30: 'A cada 30 minutos',
+  60: 'A cada 1 hora',
+  360: 'A cada 6 horas',
+  1440: 'A cada 24 horas',
+};
+
+export type ProvedorPix = 'mercadopago' | 'nativo';
+
+export type PixConfig = {
+  provedor: ProvedorPix;
+  chave: string;
+  recebedor: string;
+  cidade: string;
+};
+
+const LIMITE_CHAVE_PIX = 77;
+const LIMITE_RECEBEDOR_PIX = 25;
+const LIMITE_CIDADE_PIX = 15;
 
 export type ConfigPublica = {
   usuario: string;
@@ -58,8 +93,24 @@ export type ConfigPublica = {
     ultimoTesteOk: boolean | null;
     ultimoTesteMotivo: string | null;
   };
+  pix: PixConfig;
+  conciliacaoIntervaloMinutos: IntervaloConciliacaoMinutos;
+  conciliacaoUltimaEm: Date | null;
   urlNotificacao: string;
 };
+
+export async function carregarIntervaloConciliacaoMinutos(cliente: Consultavel): Promise<IntervaloConciliacaoMinutos> {
+  const minutos = (await linha(cliente)).conciliacao_intervalo_minutos;
+  return intervaloConciliacaoValido(minutos) ? (minutos as IntervaloConciliacaoMinutos) : 60;
+}
+
+export async function lerUltimaConciliacaoAutomatica(cliente: Consultavel): Promise<Date | null> {
+  const linhas = await consultar<{ atualizado_em: Date }>(
+    cliente,
+    `SELECT atualizado_em FROM agendamento WHERE nome = 'conciliacao'`,
+  );
+  return linhas[0]?.atualizado_em ?? null;
+}
 
 async function linha(cliente: Consultavel): Promise<LinhaConfig> {
   const linhas = await consultar<LinhaConfig>(cliente, 'SELECT * FROM configuracao WHERE id = 1');
@@ -85,6 +136,38 @@ export async function carregarEvolution(cliente: Consultavel): Promise<Credencia
   const apiKey = atual.evolution_api_key?.trim() ?? '';
   if (!url || !instance || !apiKey) return null;
   return { url, apiKey, instance };
+}
+
+function pixDaLinha(atual: LinhaConfig): PixConfig {
+  return {
+    provedor: atual.pix_provedor,
+    chave: atual.pix_chave?.trim() ?? '',
+    recebedor: atual.pix_recebedor,
+    cidade: atual.pix_cidade,
+  };
+}
+
+export async function carregarPix(cliente: Consultavel): Promise<PixConfig> {
+  return pixDaLinha(await linha(cliente));
+}
+
+const SOBREPOSICAO_CONCILIACAO_MS = 2 * 60 * 60 * 1000;
+const JANELA_INICIAL_CONCILIACAO_MS = 35 * 24 * 60 * 60 * 1000;
+
+export async function janelaConciliacaoPix(
+  cliente: Consultavel,
+  agora: Date,
+): Promise<{ inicio: Date; fim: Date }> {
+  const atual = await linha(cliente);
+  const fim = agora;
+  const inicio = atual.pix_conciliacao_ate
+    ? new Date(atual.pix_conciliacao_ate.getTime() - SOBREPOSICAO_CONCILIACAO_MS)
+    : new Date(agora.getTime() - JANELA_INICIAL_CONCILIACAO_MS);
+  return { inicio, fim };
+}
+
+export async function marcarConciliacaoPix(cliente: Consultavel, ate: Date): Promise<void> {
+  await cliente.query('UPDATE configuracao SET pix_conciliacao_ate = $1 WHERE id = 1', [ate]);
 }
 
 export async function importarEvolutionLegado(
@@ -138,6 +221,9 @@ export async function lerConfigPublica(app: App): Promise<ConfigPublica> {
       ultimoTesteOk: atual.evolution_teste_ok,
       ultimoTesteMotivo: atual.evolution_teste_motivo,
     },
+    pix: pixDaLinha(atual),
+    conciliacaoIntervaloMinutos: await carregarIntervaloConciliacaoMinutos(app.pool),
+    conciliacaoUltimaEm: await lerUltimaConciliacaoAutomatica(app.pool),
     urlNotificacao: app.env.publicUrl ? urlNotificacao(app.env.publicUrl) : '',
   };
 }
@@ -159,57 +245,77 @@ export type EntradaConfig = {
   evolutionUrl: string;
   evolutionInstance: string;
   evolutionApiKey: string;
+  pixProvedor: string;
+  pixChave: string;
+  pixRecebedor: string;
+  pixCidade: string;
+  conciliacaoIntervaloMinutos: string;
 };
 
-export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Promise<{ ok: true } | { ok: false; aviso: string }> {
+function validarPix(entrada: PixConfig): string | null {
+  if (entrada.provedor === 'nativo' && !entrada.chave) return 'Informe a chave PIX para usar o PIX nativo.';
+  if (entrada.chave.length > LIMITE_CHAVE_PIX) return `A chave PIX pode ter no máximo ${LIMITE_CHAVE_PIX} caracteres.`;
+  if (!entrada.recebedor || entrada.recebedor.length > LIMITE_RECEBEDOR_PIX) {
+    return `Informe o nome do recebedor (até ${LIMITE_RECEBEDOR_PIX} caracteres).`;
+  }
+  if (!entrada.cidade || entrada.cidade.length > LIMITE_CIDADE_PIX) {
+    return `Informe a cidade do recebedor (até ${LIMITE_CIDADE_PIX} caracteres).`;
+  }
+  return null;
+}
+
+export type ResultadoSalvarConfig = { ok: true } | { ok: false; aviso: string; campo?: string };
+
+export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Promise<ResultadoSalvarConfig> {
   const atual = await linha(app.pool);
   const usuario = entrada.usuario.trim();
   const email = entrada.emailDono.trim();
-  if (usuario.length < 1 || usuario.length > 80) return { ok: false, aviso: 'Informe o usuário do painel.' };
-  if (!emailValido(email)) return { ok: false, aviso: 'E-mail do dono inválido.' };
+  if (usuario.length < 1 || usuario.length > 80) return { ok: false, aviso: 'Informe o usuário do painel.', campo: 'usuario' };
+  if (!emailValido(email)) return { ok: false, aviso: 'E-mail do dono inválido.', campo: 'email_dono' };
   const trocaSenha = entrada.senhaNova.trim().length > 0;
-  const trocaEmail = email !== atual.email_dono;
-  const trocaUsuario = usuario !== atual.usuario_painel;
-  const trocaMpToken = entrada.mpAccessToken.trim().length > 0;
-  const trocaWebhook = entrada.mpWebhookSecret.trim().length > 0;
-  const trocaSmtpSenha = entrada.smtpSenha.trim().length > 0;
-  const trocaSmtpHost = entrada.smtpHost.trim() !== (atual.smtp_host ?? '').trim();
-  const trocaSmtpPorta = entrada.smtpPorta.trim() !== String(atual.smtp_porta ?? '').trim() && entrada.smtpPorta.trim().length > 0;
-  const trocaSmtpUsuario = entrada.smtpUsuario.trim() !== (atual.smtp_usuario ?? '').trim();
+  if (trocaSenha && !entrada.senhaAtual.trim()) {
+    return { ok: false, aviso: 'Informe a senha atual para definir uma senha nova.', campo: 'senha_atual' };
+  }
+  if (trocaSenha && !(await confereHash(entrada.senhaAtual, atual.senha_painel_hash))) {
+    return { ok: false, aviso: 'A senha atual não confere.', campo: 'senha_atual' };
+  }
   const evolutionUrl = entrada.evolutionUrl.trim();
   const evolutionInstance = entrada.evolutionInstance.trim();
-  const trocaEvolutionUrl = evolutionUrl !== (atual.evolution_url ?? '').trim();
-  const trocaEvolutionInstancia = evolutionInstance !== (atual.evolution_instance ?? '').trim();
-  const trocaEvolutionChave = entrada.evolutionApiKey.trim().length > 0;
-  const trocaIntegracao = trocaMpToken
-    || trocaWebhook
-    || trocaSmtpSenha
-    || trocaSmtpHost
-    || trocaSmtpPorta
-    || trocaSmtpUsuario
-    || trocaEvolutionUrl
-    || trocaEvolutionInstancia
-    || trocaEvolutionChave;
-  if ((trocaSenha || trocaEmail || trocaUsuario || trocaIntegracao)
-    && !(await confereHash(entrada.senhaAtual, atual.senha_painel_hash))) {
-    return { ok: false, aviso: 'A senha atual não confere.' };
+  if (entrada.pixProvedor !== 'mercadopago' && entrada.pixProvedor !== 'nativo') {
+    return { ok: false, aviso: 'Escolha como o PIX será gerado.', campo: 'pix_provedor' };
   }
+  const pix: PixConfig = {
+    provedor: entrada.pixProvedor,
+    chave: entrada.pixChave.trim(),
+    recebedor: entrada.pixRecebedor.trim(),
+    cidade: entrada.pixCidade.trim(),
+  };
   const criptografia = entrada.smtpCriptografia;
   if (criptografia !== 'nenhuma' && criptografia !== 'starttls' && criptografia !== 'tls_implicito') {
-    return { ok: false, aviso: 'Escolha a criptografia do SMTP.' };
+    return { ok: false, aviso: 'Escolha a criptografia do SMTP.', campo: 'smtp_criptografia' };
   }
   const porta = entrada.smtpPorta.trim() ? Number(entrada.smtpPorta) : null;
   if (entrada.smtpHost.trim() && (!porta || !Number.isInteger(porta) || porta < 1 || porta > 65535)) {
-    return { ok: false, aviso: 'Porta SMTP inválida.' };
+    return { ok: false, aviso: 'Porta SMTP inválida.', campo: 'smtp_porta' };
   }
   if (entrada.smtpRemetenteEmail.trim() && !emailValido(entrada.smtpRemetenteEmail)) {
-    return { ok: false, aviso: 'E-mail do remetente inválido.' };
+    return { ok: false, aviso: 'E-mail do remetente inválido.', campo: 'smtp_remetente_email' };
   }
   if (evolutionUrl && !urlHttpRemotaPermitida(evolutionUrl)) {
-    return { ok: false, aviso: 'URL do Evolution inválida ou não permitida.' };
+    return { ok: false, aviso: 'URL do Evolution inválida ou não permitida.', campo: 'evolution_url' };
   }
   if ((evolutionUrl || evolutionInstance || entrada.evolutionApiKey.trim()) && (!evolutionUrl || !evolutionInstance)) {
-    return { ok: false, aviso: 'Informe a URL e a instância do Evolution juntas.' };
+    const campo = !evolutionUrl ? 'evolution_url' : 'evolution_instance';
+    return { ok: false, aviso: 'Informe a URL e a instância do Evolution juntas.', campo };
+  }
+  const avisoPix = validarPix(pix);
+  if (avisoPix) {
+    const campo = avisoPix.includes('chave') ? 'pix_chave' : avisoPix.includes('cidade') ? 'pix_cidade' : 'pix_recebedor';
+    return { ok: false, aviso: avisoPix, campo };
+  }
+  const conciliacaoMinutos = Number(entrada.conciliacaoIntervaloMinutos);
+  if (!intervaloConciliacaoValido(conciliacaoMinutos)) {
+    return { ok: false, aviso: 'Escolha um intervalo de consulta automática válido.', campo: 'conciliacao_intervalo_minutos' };
   }
   const hash = trocaSenha ? await gerarHash(entrada.senhaNova.trim()) : atual.senha_painel_hash;
   await app.pool.query(
@@ -229,7 +335,12 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
       evolution_url = $13,
       evolution_instance = $14,
       evolution_api_key = $15,
-      atualizado_em = $16
+      atualizado_em = $16,
+      pix_provedor = $17,
+      pix_chave = $18,
+      pix_recebedor = $19,
+      pix_cidade = $20,
+      conciliacao_intervalo_minutos = $21
      WHERE id = 1`,
     [
       usuario,
@@ -248,6 +359,11 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
       evolutionInstance || null,
       entrada.evolutionApiKey.trim() || atual.evolution_api_key,
       app.clock(),
+      pix.provedor,
+      pix.chave || null,
+      pix.recebedor,
+      pix.cidade,
+      conciliacaoMinutos,
     ],
   );
   return { ok: true };
