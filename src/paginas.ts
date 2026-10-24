@@ -373,7 +373,7 @@ export function layout(opcoes: {
       .ficha-cabeca { align-items:flex-start; }
       .ficha-tabela-scroll { overflow:visible; }
       .ficha-tabela table { min-width:0; width:100%; display:block; overflow:visible; }
-      .ficha-tabela thead { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+      .ficha-tabela thead { position:absolute; left:-10000px; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
       .ficha-tabela tbody, .ficha-tabela tfoot { display:block; width:100%; }
       .ficha-tabela tbody tr {
         display:grid;
@@ -483,6 +483,8 @@ export function layout(opcoes: {
       table { display:block; overflow:auto; }
       .tabela-pessoas { display:table; overflow:visible; }
       .ficha-tabela table { overflow:visible; }
+      .ficha-abas { gap:0; }
+      .ficha-aba { padding:12px 10px; }
     }
     main:focus { outline:none; }
   </style>
