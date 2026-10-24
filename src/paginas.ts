@@ -333,8 +333,8 @@ export function layout(opcoes: {
     .ficha-gerar label { flex:0 0 auto; min-width:0; gap:4px; font-size:.75rem; letter-spacing:.04em; text-transform:uppercase; }
     .ficha-gerar input { width:4.6rem; height:36px; padding:6px 8px; }
     .ficha-gerar button, .ficha-acoes-topo > form > button { height:36px; }
-    .ficha-abas { display:flex; gap:2px; border-bottom:1px solid var(--line); margin:18px 0 18px; }
-    .ficha-aba { color:var(--muted); text-decoration:none; font-family:"Space Grotesk",sans-serif; font-weight:600; padding:12px 16px; border-bottom:2px solid transparent; margin-bottom:-1px; }
+    .ficha-abas { display:flex; gap:2px; border-bottom:1px solid var(--line); margin:18px 0 18px; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .ficha-aba { color:var(--muted); text-decoration:none; font-family:"Space Grotesk",sans-serif; font-weight:600; padding:12px 16px; border-bottom:2px solid transparent; margin-bottom:-1px; white-space:nowrap; flex:0 0 auto; }
     .ficha-aba:hover { color:var(--ink); }
     .ficha-aba.ativa { color:var(--ciano); border-bottom-color:var(--ciano); }
     .ficha-aba .contagem { color:var(--gray); font-weight:500; margin-left:6px; font-family:Geist,sans-serif; }
@@ -347,6 +347,7 @@ export function layout(opcoes: {
     .ficha-tabela { padding:0; overflow:hidden; }
     .ficha-tabela > .bloco-cabeca { margin:0; padding:16px 18px; border-bottom:1px solid var(--line); align-items:center; }
     .ficha-tabela > .bloco-cabeca p { margin:4px 0 0; }
+    .ficha-tabela-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; max-width:100%; }
     .ficha-tabela table { min-width:720px; width:100%; }
     .ficha-tabela th, .ficha-tabela td { vertical-align:middle; padding:12px 16px; }
     .ficha-tabela th:last-child, .ficha-tabela td:last-child { width:auto; white-space:nowrap; }
@@ -370,6 +371,52 @@ export function layout(opcoes: {
     @media (max-width: 900px) {
       .ficha-form-grid, .ficha-metricas { grid-template-columns:1fr; }
       .ficha-cabeca { align-items:flex-start; }
+      .ficha-tabela-scroll { overflow:visible; }
+      .ficha-tabela table { min-width:0; width:100%; display:block; overflow:visible; }
+      .ficha-tabela thead { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+      .ficha-tabela tbody, .ficha-tabela tfoot { display:block; width:100%; }
+      .ficha-tabela tbody tr {
+        display:grid;
+        grid-template-columns:repeat(2, minmax(0, 1fr));
+        gap:10px 16px;
+        padding:16px 18px;
+        border-bottom:1px solid var(--line);
+      }
+      .ficha-tabela tbody td {
+        display:block;
+        padding:0;
+        border:0;
+        width:auto;
+        white-space:normal;
+      }
+      .ficha-tabela tbody td:first-child { grid-column:1 / -1; font-weight:600; }
+      .ficha-tabela tbody td[colspan],
+      .ficha-tabela tbody td.celula-acoes { grid-column:1 / -1; }
+      .ficha-tabela tbody td[data-label]::before {
+        content:attr(data-label);
+        display:block;
+        color:var(--muted);
+        font-size:.7rem;
+        letter-spacing:.06em;
+        text-transform:uppercase;
+        font-weight:600;
+        margin-bottom:2px;
+      }
+      .ficha-tabela tbody td:first-child::before,
+      .ficha-tabela tbody td.celula-acoes::before,
+      .ficha-tabela tbody td[colspan]::before { display:none; }
+      .ficha-tabela td.dinheiro, .ficha-tabela th.num { text-align:left; }
+      .ficha-tabela .acoes-celula { justify-content:flex-start; flex-wrap:wrap; }
+      .ficha-tabela tfoot tr {
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:12px;
+        padding:14px 18px;
+        background:rgba(255,255,255,.03);
+      }
+      .ficha-tabela tfoot td { display:block; padding:0; border:0; width:auto; background:transparent; }
+      .ficha-tabela tfoot td[colspan], .ficha-tabela tfoot td:empty { display:none; }
     }
     .lateral { display:grid; gap:14px; }
     .lateral .acoes { justify-content:flex-start; }
@@ -434,6 +481,8 @@ export function layout(opcoes: {
       main, .marca-login { padding:20px 16px 48px; }
       .metrica, .card { margin-bottom:12px; }
       table { display:block; overflow:auto; }
+      .tabela-pessoas { display:table; overflow:visible; }
+      .ficha-tabela table { overflow:visible; }
     }
     main:focus { outline:none; }
   </style>
@@ -1296,11 +1345,11 @@ function abaLancamentosFicha(dados: FichaPessoaDados): string {
       const idModal = `modal-lancamento-${item.id}`;
       const podeExcluir = !itensUsados.has(item.id);
       return `<tr>
-        <td>${e(item.descricao)}</td>
-        <td class="dinheiro num">${formatarReais(item.valor_centavos)}</td>
-        <td>${String(item.inicio_mes).padStart(2, '0')}/${item.inicio_ano}</td>
-        <td>${fimExibido(item.fim_mes, item.fim_ano)}</td>
-        <td><div class="acoes-celula">
+        <td data-label="Descrição">${e(item.descricao)}</td>
+        <td class="dinheiro num" data-label="Valor">${formatarReais(item.valor_centavos)}</td>
+        <td data-label="Início">${String(item.inicio_mes).padStart(2, '0')}/${item.inicio_ano}</td>
+        <td data-label="Fim">${fimExibido(item.fim_mes, item.fim_ano)}</td>
+        <td class="celula-acoes"><div class="acoes-celula">
           <button type="button" class="secundario compacto" data-modal-abrir="${e(idModal)}">${rotulo('editar', 'Editar')}</button>
           ${podeExcluir
             ? `<form method="post" action="/itens/${e(item.id)}/excluir">${csrf(csrfToken)}<button class="secundario compacto perigo" type="submit">${rotulo('excluir', 'Excluir')}</button></form>`
@@ -1312,7 +1361,7 @@ function abaLancamentosFicha(dados: FichaPessoaDados): string {
   const total = itens.reduce((soma, item) => soma + item.valor_centavos, 0);
   const modaisEdit = itens
     .map((item) => {
-      const valores = valoresItem(item, rascunhoItem, false);
+      const valores = valoresItem(item, rascunhoItem ?? null, false);
       const inicial = rascunhoItem?.id === item.id;
       return modalLancamento(pessoa.id, csrfToken, valores, {
         idModal: `modal-lancamento-${item.id}`,
@@ -1322,7 +1371,7 @@ function abaLancamentosFicha(dados: FichaPessoaDados): string {
       });
     })
     .join('');
-  const novo = valoresItem(null, rascunhoItem, true);
+  const novo = valoresItem(null, rascunhoItem ?? null, true);
   const modalNovo = modalLancamento(pessoa.id, csrfToken, novo, {
     idModal: 'modal-lancamento-novo',
     titulo: 'Novo lançamento',
@@ -1334,11 +1383,13 @@ function abaLancamentosFicha(dados: FichaPessoaDados): string {
         <div><h2>Lançamentos recorrentes</h2><p class="muted">Itens que entram no valor consolidado da cobrança mensal.</p></div>
         <button type="button" class="botao" data-modal-abrir="modal-lancamento-novo">${rotulo('mais', 'Novo lançamento')}</button>
       </div>
+      <div class="ficha-tabela-scroll">
       <table>
         <thead><tr><th>Descrição</th><th class="num">Valor</th><th>Início</th><th>Fim</th><th class="num">Ações</th></tr></thead>
         <tbody>${linhas || '<tr><td colspan="5" class="muted">Nenhum lançamento cadastrado.</td></tr>'}</tbody>
         ${itens.length ? `<tfoot><tr><td>Total mensal</td><td class="dinheiro num">${formatarReais(total)}</td><td colspan="3"></td></tr></tfoot>` : ''}
       </table>
+      </div>
     </div>
     ${modalNovo}${modaisEdit}`;
 }
@@ -1349,21 +1400,23 @@ function abaHistoricoFicha(dados: FichaPessoaDados): string {
     .map((linha) => {
       const ver = `<button type="button" class="secundario compacto" data-modal-abrir="modal-cobranca-itens-${e(linha.id)}">${rotulo('lista', 'Ver lançamentos')}</button>`;
       return `<tr>
-        <td class="dinheiro num">${formatarReais(linha.total)}</td>
-        <td>${e(linha.competencia)}</td>
-        <td>${tagStatus(linha.status)}</td>
-        <td>${linha.pagaEm ? e(linha.pagaEm) : '—'}</td>
-        <td>${ver}</td>
+        <td class="dinheiro num" data-label="Valor">${formatarReais(linha.total)}</td>
+        <td data-label="Competência">${e(linha.competencia)}</td>
+        <td data-label="Status">${tagStatus(linha.status)}</td>
+        <td data-label="Pago em">${linha.pagaEm ? e(linha.pagaEm) : '—'}</td>
+        <td class="celula-acoes">${ver}</td>
       </tr>`;
     })
     .join('');
   const modais = historico.map((linha) => modalItensCobranca(linha, linhasCobranca[linha.id] ?? [])).join('');
   return `<div class="bloco ficha-tabela">
       <div class="bloco-cabeca"><div><h2>Cobranças geradas</h2><p class="muted">Histórico de faturas e liquidações desta pessoa.</p></div></div>
+      <div class="ficha-tabela-scroll">
       <table>
         <thead><tr><th class="num">Valor</th><th>Competência</th><th>Status</th><th>Pago em</th><th>Ações</th></tr></thead>
         <tbody>${linhas || '<tr><td colspan="5" class="muted">Nenhuma cobrança gerada ainda.</td></tr>'}</tbody>
       </table>
+      </div>
     </div>
     ${modais}`;
 }
