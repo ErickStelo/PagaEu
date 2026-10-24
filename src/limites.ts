@@ -2,13 +2,12 @@ import type { IncomingMessage } from 'node:http';
 
 const BLOQUEIO_MS = 15 * 60 * 1000;
 const MAX_FALHAS = 8;
-const REENVIO_MAX = 5;
-const REENVIO_JANELA_MS = 10 * 60 * 1000;
+const REENVIO_COOLDOWN_MS = 5 * 60 * 1000;
 
 type Estado = {
   falhas: number;
   bloqueadoAte: number;
-  reenvios: number[];
+  ultimoEnvioCodigoMs: number;
 };
 
 const estados = new Map<string, Estado>();
@@ -29,7 +28,7 @@ export function ipDoPedido(req: IncomingMessage): string {
 function estado(chave: string): Estado {
   let atual = estados.get(chave);
   if (!atual) {
-    atual = { falhas: 0, bloqueadoAte: 0, reenvios: [] };
+    atual = { falhas: 0, bloqueadoAte: 0, ultimoEnvioCodigoMs: 0 };
     estados.set(chave, atual);
   }
   return atual;
@@ -57,13 +56,17 @@ export function registrarSucesso(chave: string): void {
   estados.delete(chave);
 }
 
-export function podeReenviarCodigo(chave: string, agoraMs: number): boolean {
-  const atual = estado(`reenvio:${chave}`);
-  atual.reenvios = atual.reenvios.filter((momento) => agoraMs - momento < REENVIO_JANELA_MS);
-  return atual.reenvios.length < REENVIO_MAX;
+export function aguardarReenvioCodigoMs(chave: string, agoraMs: number): number {
+  const ultimo = estado(`reenvio:${chave}`).ultimoEnvioCodigoMs;
+  if (!ultimo) return 0;
+  const restante = ultimo + REENVIO_COOLDOWN_MS - agoraMs;
+  return restante > 0 ? restante : 0;
 }
 
-export function registrarReenvioCodigo(chave: string, agoraMs: number): void {
-  const atual = estado(`reenvio:${chave}`);
-  atual.reenvios.push(agoraMs);
+export function podeReenviarCodigo(chave: string, agoraMs: number): boolean {
+  return aguardarReenvioCodigoMs(chave, agoraMs) === 0;
+}
+
+export function registrarEnvioCodigoLogin(chave: string, agoraMs: number): void {
+  estado(`reenvio:${chave}`).ultimoEnvioCodigoMs = agoraMs;
 }

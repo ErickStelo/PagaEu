@@ -338,6 +338,111 @@ test('robots e cabeçalhos impedem indexação', async () => {
   }
 });
 
+const UUID_FALSO = '00000000-0000-4000-8000-000000000000';
+
+const GET_ADMIN = [
+  '/',
+  '/quem-deve',
+  '/cobrancas',
+  `/cobrancas/${UUID_FALSO}`,
+  '/templates',
+  '/configuracao',
+  '/pessoas/nova',
+  `/pessoas/${UUID_FALSO}`,
+  `/pessoas/${UUID_FALSO}/itens`,
+  '/admin',
+  '/dashboard',
+];
+
+const POST_ADMIN = [
+  '/lote',
+  '/cobrancas/consultar',
+  '/pessoas',
+  `/pessoas/${UUID_FALSO}`,
+  `/pessoas/${UUID_FALSO}/ativa`,
+  `/pessoas/${UUID_FALSO}/gerar`,
+  `/pessoas/${UUID_FALSO}/itens`,
+  `/itens/${UUID_FALSO}`,
+  `/itens/${UUID_FALSO}/excluir`,
+  `/cobrancas/${UUID_FALSO}/baixa`,
+  `/cobrancas/${UUID_FALSO}/reabrir`,
+  `/cobrancas/${UUID_FALSO}/cancelar`,
+  `/cobrancas/${UUID_FALSO}/novo-pix`,
+  `/cobrancas/${UUID_FALSO}/invalidar-pix`,
+  `/cobrancas/${UUID_FALSO}/tentar-emissao`,
+  `/cobrancas/${UUID_FALSO}/reenviar`,
+  '/templates/email/cobranca',
+  '/templates/email/cobranca/prever',
+  '/templates/email/cobranca/restaurar',
+  '/configuracao',
+  '/configuracao/evolution',
+  '/configuracao/smtp',
+];
+
+function recusouAdmin(resposta: { status: number; texto: string; location: string | null }): boolean {
+  if (resposta.status === 303) return resposta.location === '/login';
+  if (resposta.status === 403) return /Ação recusada/.test(resposta.texto);
+  return false;
+}
+
+test('rotas do painel recusam acesso sem sessão, cookie forjado e CSRF inválido', async () => {
+  const servidor = await ouvir();
+  try {
+    const anônimo = new SessaoHttp(servidor.base);
+    for (const caminho of GET_ADMIN) {
+      const resposta = await anônimo.pedir('GET', caminho);
+      assert.equal(resposta.status, 303, `GET ${caminho}`);
+      assert.equal(resposta.location, '/login', `GET ${caminho}`);
+      assert.equal(/Dashboard|Configuração|Quem deve/.test(resposta.texto) && resposta.texto.includes('<aside>'), false, caminho);
+    }
+    for (const caminho of POST_ADMIN) {
+      const resposta = await anônimo.pedir('POST', caminho, { csrf: 'forjado', usuario: 'dono', senha: 'segredo-teste' });
+      assert.ok(recusouAdmin(resposta), `POST anônimo ${caminho} → ${resposta.status}`);
+    }
+
+    const cookieFalso = new SessaoHttp(servidor.base);
+    cookieFalso.cookies.set('pagaeu_sessao', UUID_FALSO);
+    for (const caminho of ['/', '/configuracao', '/quem-deve']) {
+      const resposta = await cookieFalso.pedir('GET', caminho);
+      assert.equal(resposta.status, 303, `cookie UUID ${caminho}`);
+      assert.equal(resposta.location, '/login');
+    }
+    const mutacaoFalsa = await cookieFalso.pedir('POST', '/configuracao', {
+      csrf: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      usuario_painel: 'invasor',
+    });
+    assert.ok(recusouAdmin(mutacaoFalsa), 'POST /configuracao com sessão forjada');
+
+    const sqlCookie = new SessaoHttp(servidor.base);
+    sqlCookie.cookies.set('pagaeu_sessao', `' OR 1=1 --`);
+    const injetado = await sqlCookie.pedir('GET', '/configuracao');
+    assert.equal(injetado.status, 303);
+    assert.equal(injetado.location, '/login');
+
+    const etapa2fa = new SessaoHttp(servidor.base);
+    const codigo = await etapa2fa.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' });
+    assert.equal(codigo.status, 200);
+    assert.ok(etapa2fa.cookies.get('pagaeu_codigo'));
+    assert.equal(etapa2fa.cookies.get('pagaeu_sessao'), undefined);
+    const pulo2fa = await etapa2fa.pedir('GET', '/');
+    assert.equal(pulo2fa.status, 303);
+    assert.equal(pulo2fa.location, '/login');
+    const puloConfig = await etapa2fa.pedir('POST', '/configuracao', { csrf: 'x', usuario_painel: 'invasor' });
+    assert.ok(recusouAdmin(puloConfig));
+
+    app().env.twoFactorEnabled = false;
+    const autenticado = new SessaoHttp(servidor.base);
+    assert.equal((await autenticado.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' })).status, 303);
+    const csrfErrado = await autenticado.pedir('POST', '/lote', { csrf: 'token-errado', ano: '2026', mes: '3' });
+    assert.equal(csrfErrado.status, 403);
+    assert.match(csrfErrado.texto, /Ação recusada/);
+    const csrfAusente = await autenticado.pedir('POST', '/configuracao', { usuario_painel: 'invasor' });
+    assert.equal(csrfAusente.status, 403);
+  } finally {
+    await servidor.fechar();
+  }
+});
+
 test('arquivos sensíveis não são expostos pelo HTTP', async () => {
   const servidor = await ouvir();
   try {
@@ -466,4 +571,16 @@ test('configuração grava telefone de 2FA e recusa número inválido', async ()
   } finally {
     await servidor.fechar();
   }
+});
+
+test('reenvio de código do login espera 5 minutos entre envios', async () => {
+  const { reiniciarLimites, registrarEnvioCodigoLogin, aguardarReenvioCodigoMs, podeReenviarCodigo } = await import(
+    '../src/limites.ts',
+  );
+  reiniciarLimites();
+  const t0 = 1_000_000;
+  registrarEnvioCodigoLogin('ip-teste', t0);
+  assert.equal(podeReenviarCodigo('ip-teste', t0 + 1), false);
+  assert.equal(aguardarReenvioCodigoMs('ip-teste', t0 + 60_000), 4 * 60_000);
+  assert.equal(podeReenviarCodigo('ip-teste', t0 + 5 * 60_000), true);
 });

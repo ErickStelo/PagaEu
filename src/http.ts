@@ -12,6 +12,7 @@ import {
   lerSessao,
   pegarFlash,
   reenviarCodigo,
+  SESSAO_OCIOSA_MS,
   type CanalCodigo,
   type Flash,
   type Sessao,
@@ -48,10 +49,10 @@ import {
 import { caminhoProibido, nomeEstaticoPermitido } from './caminho.ts';
 import { bancoSaudavel, consultar } from './db.ts';
 import {
+  aguardarReenvioCodigoMs,
   ipDoPedido,
-  podeReenviarCodigo,
+  registrarEnvioCodigoLogin,
   registrarFalha,
-  registrarReenvioCodigo,
   registrarSucesso,
   verificarTentativa,
 } from './limites.ts';
@@ -142,6 +143,17 @@ function rota(metodo: string, caminho: string, tratar: (ctx: Ctx) => Promise<voi
 
 const AVISO_LIMITE = 'Muitas tentativas. Aguarde alguns minutos e tente de novo.';
 
+function avisoCooldownReenvio(aguardarMs: number): string {
+  const minutos = Math.max(1, Math.ceil(aguardarMs / 60_000));
+  return minutos === 1
+    ? 'Aguarde 1 minuto para reenviar o código.'
+    : `Aguarde ${minutos} minutos para reenviar o código.`;
+}
+
+function segundosCooldownReenvio(ip: string, agoraMs: number): number {
+  return Math.ceil(aguardarReenvioCodigoMs(ip, agoraMs) / 1000);
+}
+
 const CABECALHO_ROBOTS = 'noindex, nofollow, noarchive, nosnippet, noimageindex';
 
 const CORPO_ROBOTS_TXT = 'User-agent: *\nDisallow: /\n';
@@ -168,6 +180,18 @@ function cookieSeguro(ctx: Ctx): boolean {
 
 function canalCodigo(valor: string | undefined): CanalCodigo {
   return valor === 'whatsapp' ? 'whatsapp' : 'email';
+}
+
+function paginaLoginEtapaCodigo(ctx: Ctx, erro: string | null, valor = ''): string {
+  const agoraMs = ctx.app.clock().getTime();
+  const ip = ipDoPedido(ctx.req);
+  return paginaLogin(
+    erro,
+    true,
+    valor,
+    canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal')),
+    segundosCooldownReenvio(ip, agoraMs),
+  );
 }
 
 function recusarLimiteLogin(ctx: Ctx, etapaCodigo: boolean, valor = ''): void {
@@ -258,7 +282,10 @@ function html(ctx: Ctx, status: number, titulo: string, corpo: string, flash: Fl
   ctx.res.setHeader('X-Content-Type-Options', 'nosniff');
   ctx.res.setHeader('Referrer-Policy', 'same-origin');
   cabecalhosSeguranca(ctx.res);
-  ctx.res.end(layout({ titulo, corpo, autenticado: Boolean(ctx.sessao), flash, caminho: ctx.url.pathname }));
+  const sessaoExpiraEmMs = ctx.sessao ? ctx.sessao.ultimoUsoEm.getTime() + SESSAO_OCIOSA_MS : undefined;
+  ctx.res.end(
+    layout({ titulo, corpo, autenticado: Boolean(ctx.sessao), flash, caminho: ctx.url.pathname, sessaoExpiraEmMs }),
+  );
 }
 
 function redirecionar(ctx: Ctx, local: string): void {
@@ -387,7 +414,9 @@ rota('GET', '/login', async (ctx) => {
   if (ctx.sessao) return redirecionar(ctx, '/');
   const codigo = lerCookies(ctx.req).get('pagaeu_codigo');
   const canal = canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'));
-  html(ctx, 200, codigo ? 'Código' : 'Entrar', paginaLogin(null, Boolean(codigo), '', canal), null);
+  const agoraMs = ctx.app.clock().getTime();
+  const cooldownSeg = codigo ? segundosCooldownReenvio(ipDoPedido(ctx.req), agoraMs) : 0;
+  html(ctx, 200, codigo ? 'Código' : 'Entrar', paginaLogin(null, Boolean(codigo), '', canal, cooldownSeg), null);
 });
 
 rota('POST', '/login', async (ctx) => {
@@ -409,9 +438,17 @@ rota('POST', '/login', async (ctx) => {
     ctx.sessao = await lerSessao(ctx.app, resultado.sessaoId);
     return redirecionar(ctx, '/');
   }
+  const ip = ipDoPedido(ctx.req);
+  registrarEnvioCodigoLogin(ip, agoraMs);
   definirCookie(ctx, 'pagaeu_codigo', resultado.codigoId, 30 * 60);
   definirCookie(ctx, 'pagaeu_codigo_canal', resultado.canal, 30 * 60);
-  html(ctx, 200, 'Código', paginaLogin(null, true, '', resultado.canal), null);
+  html(
+    ctx,
+    200,
+    'Código',
+    paginaLogin(null, true, '', resultado.canal, segundosCooldownReenvio(ip, agoraMs)),
+    null,
+  );
 });
 
 rota('POST', '/login/codigo', async (ctx) => {
@@ -428,13 +465,7 @@ rota('POST', '/login/codigo', async (ctx) => {
   if (!resultado.ok) {
     registrarFalha(chave, agoraMs);
     if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: resultado.aviso });
-    return html(
-      ctx,
-      401,
-      'Código',
-      paginaLogin(resultado.aviso, true, ctx.form.get('codigo') ?? '', canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'))),
-      null,
-    );
+    return html(ctx, 401, 'Código', paginaLoginEtapaCodigo(ctx, resultado.aviso, ctx.form.get('codigo') ?? ''), null);
   }
   registrarSucesso(chave);
   registrarSucesso(`senha:${ipDoPedido(ctx.req)}`);
@@ -448,9 +479,13 @@ rota('POST', '/login/codigo', async (ctx) => {
 rota('POST', '/login/reenviar', async (ctx) => {
   const agoraMs = ctx.app.clock().getTime();
   const ip = ipDoPedido(ctx.req);
-  if (!podeReenviarCodigo(ip, agoraMs)) {
-    if (pedidoAjax(ctx)) return json(ctx, 429, { ok: false, aviso: AVISO_LIMITE });
-    return html(ctx, 429, 'Código', paginaLogin(AVISO_LIMITE, true, '', canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'))), null);
+  const aguardarMs = aguardarReenvioCodigoMs(ip, agoraMs);
+  if (aguardarMs > 0) {
+    const aviso = avisoCooldownReenvio(aguardarMs);
+    const canal = canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'));
+    const cooldownSeg = segundosCooldownReenvio(ip, agoraMs);
+    if (pedidoAjax(ctx)) return json(ctx, 429, { ok: false, aviso });
+    return html(ctx, 429, 'Código', paginaLogin(aviso, true, '', canal, cooldownSeg), null);
   }
   const codigoId = lerCookies(ctx.req).get('pagaeu_codigo');
   if (!codigoId) {
@@ -460,18 +495,18 @@ rota('POST', '/login/reenviar', async (ctx) => {
   const resultado = await reenviarCodigo(ctx.app, codigoId);
   if (!resultado.ok) {
     if (pedidoAjax(ctx)) return json(ctx, 422, { ok: false, aviso: resultado.aviso });
-    return html(
-      ctx,
-      200,
-      'Código',
-      paginaLogin(resultado.aviso, true, '', canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'))),
-      null,
-    );
+    return html(ctx, 200, 'Código', paginaLoginEtapaCodigo(ctx, resultado.aviso), null);
   }
-  registrarReenvioCodigo(ip, agoraMs);
+  registrarEnvioCodigoLogin(ip, agoraMs);
   definirCookie(ctx, 'pagaeu_codigo', resultado.codigoId, 30 * 60);
   definirCookie(ctx, 'pagaeu_codigo_canal', resultado.canal, 30 * 60);
-  html(ctx, 200, 'Código', paginaLogin(null, true, '', resultado.canal), { tipo: 'ok', texto: 'Enviamos outro código.' });
+  html(
+    ctx,
+    200,
+    'Código',
+    paginaLogin(null, true, '', resultado.canal, segundosCooldownReenvio(ip, agoraMs)),
+    { tipo: 'ok', texto: 'Enviamos outro código.' },
+  );
 });
 
 rota('POST', '/sair', async (ctx) => {

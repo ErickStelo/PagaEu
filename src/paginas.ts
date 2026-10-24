@@ -136,7 +136,14 @@ function itemNav(atual: Secao, id: Secao, href: string, nome: string, nomeIcone:
   return `<a href="${href}"${ativo}>${icone(nomeIcone)}<span>${nome}</span></a>`;
 }
 
-export function layout(opcoes: { titulo: string; corpo: string; autenticado: boolean; flash: Flash | null; caminho?: string }): string {
+export function layout(opcoes: {
+  titulo: string;
+  corpo: string;
+  autenticado: boolean;
+  flash: Flash | null;
+  caminho?: string;
+  sessaoExpiraEmMs?: number;
+}): string {
   const atual = secaoAtual(opcoes.caminho ?? '/');
   const nav = opcoes.autenticado
     ? `<aside>
@@ -148,6 +155,11 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
           ${itemNav(atual, 'templates', '/templates', 'Templates', 'templates')}
           ${itemNav(atual, 'configuracao', '/configuracao', 'Configuração', 'engrenagem')}
         </nav>
+        ${
+          opcoes.sessaoExpiraEmMs
+            ? `<p class="sessao-contador muted" id="sessao-contador" data-expira-em="${opcoes.sessaoExpiraEmMs}">Sessão: <strong data-valor>--:--</strong></p>`
+            : ''
+        }
         <form method="post" action="/sair"><button class="sair" type="submit">${rotulo('sair', 'Sair')}</button></form>
       </aside>`
     : `<section class="marca-login">
@@ -186,6 +198,8 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     aside nav a:hover { color:var(--ink); background:rgba(255,255,255,.04); }
     aside nav a.ativo { color:var(--ciano); background:rgba(34,211,238,.1); }
     aside form { margin-top:auto; }
+    .sessao-contador { margin:0 10px 10px; font-size:.82rem; line-height:1.4; }
+    .sessao-contador strong, .contador-reenvio strong { font-family:"JetBrains Mono", ui-monospace, monospace; font-weight:600; color:var(--ink); }
     button.sair { width:100%; justify-content:flex-start; background:transparent; color:var(--muted); border:1px solid var(--line); }
     main { padding:32px 32px 72px; min-width:0; }
     h1, h2 { font-family: "Space Grotesk", sans-serif; font-weight:600; letter-spacing:-.03em; }
@@ -274,6 +288,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     button, .botao { background:var(--ciano); color:var(--ciano-ink); border:0; border-radius:8px; padding:9px 14px; font:inherit; font-weight:600; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:8px; }
     .icone { width:1.05em; height:1.05em; flex:0 0 auto; }
     button.secundario, .botao.secundario { background:transparent; color:var(--ink); border:1px solid var(--line); }
+    button:disabled, button[disabled] { opacity:.45; cursor:not-allowed; pointer-events:none; }
     button.perigo { background:#7F1D1D; color:#FEE2E2; }
     button.destaque { background:#047857; color:#ECFDF5; }
     table { width:100%; border-collapse:collapse; }
@@ -750,6 +765,7 @@ export function paginaLogin(
   etapaCodigo: boolean,
   valor = '',
   canal: 'whatsapp' | 'email' = 'email',
+  cooldownReenvioSeg = 0,
 ): string {
   const aviso = erro ? `<p class="alerta">${e(erro)}</p>` : '';
   if (etapaCodigo) {
@@ -758,12 +774,17 @@ export function paginaLogin(
       canal === 'whatsapp'
         ? 'Enviamos um código de 6 dígitos no WhatsApp. Ele vale 10 minutos.'
         : 'Enviamos um código de 6 dígitos. Ele vale 10 minutos.';
+    const reenvioBloqueado = cooldownReenvioSeg > 0;
+    const botaoReenviar = reenvioBloqueado
+      ? `<button id="btn-reenviar-codigo" class="secundario" type="button" disabled aria-disabled="true">${rotulo('reenviar', 'Reenviar código')}</button>`
+      : `<button id="btn-reenviar-codigo" class="secundario" type="submit">${rotulo('reenviar', 'Reenviar código')}</button>`;
+    const contadorReenvio = `<p class="muted contador-reenvio" id="reenvio-contador"${reenvioBloqueado ? '' : ' hidden'}>Reenviar em <strong data-valor>00:00</strong></p>`;
     return `<h1>${titulo}</h1><p class="sub">${sub}</p>${aviso}
       <form method="post" action="/login/codigo">
         <label>Código<input name="codigo" inputmode="numeric" autocomplete="one-time-code" required value="${e(valor)}"></label>
         <div class="acoes"><button type="submit">${rotulo('entrar', 'Entrar')}</button></div>
       </form>
-      <form method="post" action="/login/reenviar"><div class="acoes"><button class="secundario" type="submit">${rotulo('reenviar', 'Reenviar código')}</button></div></form>`;
+      <form method="post" action="/login/reenviar" id="form-reenviar-codigo" data-cooldown-seg="${cooldownReenvioSeg}"><div class="acoes">${botaoReenviar}</div></form>${contadorReenvio}`;
   }
   return `<h1>Entrar</h1><p class="sub">Painel do dono.</p>${aviso}
     <form method="post" action="/login">

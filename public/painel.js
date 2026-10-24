@@ -17,6 +17,93 @@
     flash.remove();
   }
 
+  function formatarSegundos(segundos, comHoras) {
+    const total = Math.max(0, segundos);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const mm = String(m).padStart(2, '0');
+    const ss = String(s).padStart(2, '0');
+    if (comHoras || h > 0) return `${h}:${mm}:${ss}`;
+    return `${mm}:${ss}`;
+  }
+
+  function reenvioCodigoBloqueado(form, btn) {
+    if (!form || form.id !== 'form-reenviar-codigo') return false;
+    const alvo = btn || form.querySelector('#btn-reenviar-codigo, button');
+    return Boolean(alvo?.disabled) || Number(form.dataset.cooldownSeg || 0) > 0;
+  }
+
+  function bloquearBotaoReenvioCodigo(btn) {
+    if (!btn) return;
+    btn.disabled = true;
+    btn.setAttribute('aria-disabled', 'true');
+    btn.type = 'button';
+  }
+
+  function liberarBotaoReenvioCodigo(btn) {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.removeAttribute('aria-disabled');
+    btn.type = 'submit';
+  }
+
+  function inicializarContadorReenvioCodigo(raiz) {
+    const form = (raiz || document).querySelector('#form-reenviar-codigo');
+    if (!form) return;
+    if (form._reenvioTimerId) {
+      window.clearTimeout(form._reenvioTimerId);
+      form._reenvioTimerId = null;
+    }
+    let seg = Number(form.dataset.cooldownSeg || 0);
+    const btn = form.querySelector('#btn-reenviar-codigo, button');
+    const linha = (raiz || document).querySelector('#reenvio-contador');
+    const valor = linha ? linha.querySelector('[data-valor]') : null;
+    if (!seg || seg <= 0) {
+      liberarBotaoReenvioCodigo(btn);
+      if (linha) linha.hidden = true;
+      form.dataset.cooldownSeg = '0';
+      return;
+    }
+    if (linha) linha.hidden = false;
+    bloquearBotaoReenvioCodigo(btn);
+    function tick() {
+      form.dataset.cooldownSeg = String(seg);
+      if (seg <= 0) {
+        form.dataset.cooldownSeg = '0';
+        liberarBotaoReenvioCodigo(btn);
+        if (linha) linha.hidden = true;
+        form._reenvioTimerId = null;
+        return;
+      }
+      if (valor) valor.textContent = formatarSegundos(seg, false);
+      bloquearBotaoReenvioCodigo(btn);
+      seg -= 1;
+      form._reenvioTimerId = window.setTimeout(tick, 1000);
+    }
+    tick();
+  }
+
+  function inicializarContadorSessao(raiz) {
+    const el = (raiz || document).querySelector('#sessao-contador');
+    if (!el) return;
+    const expira = Number(el.dataset.expiraEm);
+    if (!expira) return;
+    const valor = el.querySelector('[data-valor]');
+    function tick() {
+      const seg = Math.max(0, Math.ceil((expira - Date.now()) / 1000));
+      if (valor) valor.textContent = formatarSegundos(seg, true);
+      if (seg <= 0) return;
+      window.setTimeout(tick, 1000);
+    }
+    tick();
+  }
+
+  function inicializarContadores(raiz) {
+    inicializarContadorReenvioCodigo(raiz);
+    inicializarContadorSessao(raiz);
+  }
+
   function aplicar(doc) {
     const novoMain = doc.querySelector('main');
     const main = document.querySelector('main');
@@ -29,6 +116,7 @@
     document.title = doc.title;
     mostrarFlash(document);
     inicializarModais(document);
+    inicializarContadores(document);
     main.focus();
     return true;
   }
@@ -78,6 +166,7 @@
       if (main) {
         main.innerHTML = json.html;
         inicializarModais(document);
+        inicializarContadores(document);
         main.focus();
       }
       if (json.titulo) document.title = json.titulo + ' · PagaEu';
@@ -183,8 +272,12 @@
   document.addEventListener('submit', (evento) => {
     const form = evento.target;
     if (!(form instanceof HTMLFormElement)) return;
-    evento.preventDefault();
     const botao = evento.submitter;
+    if (form.id === 'form-reenviar-codigo' && reenvioCodigoBloqueado(form, botao)) {
+      evento.preventDefault();
+      return;
+    }
+    evento.preventDefault();
     const consulta = (form.getAttribute('action') || '').includes('/cobrancas/consultar');
     const htmlBotao = botao?.innerHTML;
     if (botao) {
@@ -200,12 +293,15 @@
         toastr.error('Não foi possível falar com o servidor.');
       })
       .finally(() => {
-        if (botao && botao.isConnected) {
-          botao.disabled = false;
-          if (consulta) {
-            botao.classList.remove('carregando');
-            if (htmlBotao) botao.innerHTML = htmlBotao;
-          }
+        if (!botao?.isConnected) return;
+        if (form.id === 'form-reenviar-codigo') {
+          inicializarContadorReenvioCodigo(document);
+          return;
+        }
+        botao.disabled = false;
+        if (consulta) {
+          botao.classList.remove('carregando');
+          if (htmlBotao) botao.innerHTML = htmlBotao;
         }
       });
   });
@@ -246,6 +342,7 @@
 
   mostrarFlash(document);
   inicializarModais(document);
+  inicializarContadores(document);
 
   document.addEventListener('click', (evento) => {
     const dialog = evento.target;

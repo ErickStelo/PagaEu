@@ -6,8 +6,10 @@ import { normalizarWhatsapp } from './domain/documento.ts';
 import { segundoFatorAtivo } from './env.ts';
 import { confereHash, gerarHash } from './senha.ts';
 
-const OCIOSA_MS = 12 * 60 * 60 * 1000;
+export const SESSAO_OCIOSA_MS = 12 * 60 * 60 * 1000;
+const OCIOSA_MS = SESSAO_OCIOSA_MS;
 const CODIGO_MS = 10 * 60 * 1000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type Sessao = {
   id: string;
@@ -72,13 +74,14 @@ export async function confirmarCodigo(
   codigo: string,
   agora = app.clock(),
 ): Promise<{ ok: true; sessaoId: string } | { ok: false; aviso: string }> {
+  const invalido = { ok: false as const, aviso: 'Código inválido ou vencido.' };
+  if (!UUID.test(codigoId)) return invalido;
   const linhas = await consultar<{ id: string; codigo_hash: string; expira_em: Date; usado_em: Date | null }>(
     app.pool,
     'SELECT id, codigo_hash, expira_em, usado_em FROM codigo_login WHERE id = $1',
     [codigoId],
   );
   const pendente = linhas[0];
-  const invalido = { ok: false as const, aviso: 'Código inválido ou vencido.' };
   if (!pendente || pendente.usado_em || agora.getTime() >= pendente.expira_em.getTime()) return invalido;
   if (!(await confereHash(codigo.trim(), pendente.codigo_hash))) return invalido;
   await app.pool.query('UPDATE codigo_login SET usado_em = $1 WHERE id = $2 AND usado_em IS NULL', [agora, codigoId]);
@@ -91,6 +94,7 @@ export async function reenviarCodigo(
   codigoId: string,
   agora = app.clock(),
 ): Promise<{ ok: true; codigoId: string; canal: CanalCodigo } | { ok: false; aviso: string }> {
+  if (!UUID.test(codigoId)) return { ok: false, aviso: 'Entre novamente com usuário e senha.' };
   const existe = await app.pool.query('SELECT 1 FROM codigo_login WHERE id = $1', [codigoId]);
   if (!existe.rowCount) return { ok: false, aviso: 'Entre novamente com usuário e senha.' };
   const config = await consultar<ConfigLogin>(
@@ -151,6 +155,7 @@ async function abrirSessao(app: App, agora: Date): Promise<string> {
 }
 
 export async function lerSessao(app: App, id: string, agora = app.clock()): Promise<Sessao | null> {
+  if (!UUID.test(id)) return null;
   const linhas = await consultar<LinhaSessao>(app.pool, 'SELECT id, csrf, ultimo_uso_em, flash FROM sessao WHERE id = $1', [id]);
   const sessao = linhas[0];
   if (!sessao) return null;
