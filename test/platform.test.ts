@@ -36,7 +36,7 @@ test('Compose dev e prod sobem só a aplicação e apontam o banco por variável
     'PAGAEU_ADMIN_USER',
     'PAGAEU_ADMIN_PASSWORD',
     'PAGAEU_ADMIN_EMAIL',
-    'PAGAEU_LOGIN_CODE_DISABLED',
+    'PAGAEU_2FA_ENABLED',
   ]) {
     assert.match(exemplo, new RegExp(`^${chave}=`, 'm'));
   }

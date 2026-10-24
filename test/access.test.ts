@@ -5,7 +5,7 @@ import { lerConfigPublica, preverTemplate, salvarTemplate } from '../src/configu
 import { civilParaUtc } from '../src/domain/calendar.ts';
 import { CORPO_COBRANCA } from '../src/domain/template.ts';
 import { criarPessoa, salvarItem } from '../src/pessoas.ts';
-import { app, correio, csrf, encerrar, fixar, limpar, ouvir, preparar, SessaoHttp } from './suporte.ts';
+import { app, correio, csrf, encerrar, evolution, fixar, limpar, ouvir, preparar, SessaoHttp } from './suporte.ts';
 
 const inicio = civilParaUtc(2026, 3, 31, 9, 0, 0);
 
@@ -36,7 +36,7 @@ test('login pede código, recusa senha errada e não vaza dado', async () => {
     assert.equal(senha.texto.includes('segredo-teste'), false);
     const codigo = await anônimo.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' });
     assert.equal(codigo.status, 200);
-    assert.match(codigo.texto, /código/i);
+    assert.match(codigo.texto, /Código por e-mail/);
     const enviado = correio.enviados.at(-1)?.text ?? '';
     const digitos = enviado.match(/\d{6}/)?.[0];
     assert.ok(digitos);
@@ -56,7 +56,7 @@ test('login pede código, recusa senha errada e não vaza dado', async () => {
 });
 
 test('sessão cai só depois de doze horas', async () => {
-  app().env.loginCodeDisabled = true;
+  app().env.twoFactorEnabled = false;
   const entrada = await entrarComSenha(app(), 'dono', 'segredo-teste', inicio);
   assert.equal(entrada.ok, true);
   if (!entrada.ok || !('sessaoId' in entrada)) throw new Error('sem sessão');
@@ -104,7 +104,7 @@ test('template, segredo e telas do painel', async () => {
   assert.equal(JSON.stringify(config).includes('smtp-segredo'), false);
   assert.equal(JSON.stringify(config).includes('chave-super-secreta'), false);
 
-  app().env.loginCodeDisabled = true;
+  app().env.twoFactorEnabled = false;
   const servidor = await ouvir();
   try {
     const sessao = new SessaoHttp(servidor.base);
@@ -136,6 +136,7 @@ test('template, segredo e telas do painel', async () => {
     assert.match(configuracao, /definido: sim/);
     assert.match(configuracao, /evolution\.example/);
     assert.match(configuracao, /name="conciliacao_intervalo_minutos"/);
+    assert.match(configuracao, /Telefone para 2FA/);
     const previa = await sessao.pedir('POST', '/templates/email/cobranca/prever', {
       csrf: csrf(paginas[2]!.texto),
       assunto: 'Cobrança de {competencia}',
@@ -161,7 +162,7 @@ test('template, segredo e telas do painel', async () => {
     });
     assert.equal(pessoa.status, 303);
     const id = pessoa.location?.split('/').at(-1) ?? '';
-    const itens = await sessao.pedir('GET', `/pessoas/${id}/itens`);
+    const itens = await sessao.pedir('GET', `/pessoas/${id}?aba=lancamentos`);
     const tokenItem = csrf(itens.texto);
     const invalido = await sessao.pedir('POST', `/pessoas/${id}/itens`, {
       csrf: tokenItem,
@@ -220,8 +221,9 @@ test('template, segredo e telas do painel', async () => {
       fim_ano: '',
     });
     assert.equal(semFim.status, 303);
-    const lista = await sessao.pedir('GET', `/pessoas/${id}/itens`);
+    const lista = await sessao.pedir('GET', `/pessoas/${id}?aba=lancamentos`);
     assert.match(lista.texto, /Aluguel contínuo/);
+    assert.match(lista.texto, /Lançamentos recorrentes/);
     assert.match(lista.texto, /03\/2026/);
     assert.match(lista.texto, /—/);
     const gravado = await app().pool.query<{ fim_ano: number | null; fim_mes: number | null }>(
@@ -271,7 +273,7 @@ test('saúde responde sem sessão', async () => {
 });
 
 test('configuração do PIX fica no painel sem exigir senha atual', async () => {
-  app().env.loginCodeDisabled = true;
+  app().env.twoFactorEnabled = false;
   const servidor = await ouvir();
   try {
     const sessao = new SessaoHttp(servidor.base);
@@ -366,4 +368,102 @@ test('pessoa sem dado real não aparece na pré-visualização', async () => {
   const previsto = preverTemplate('email', 'confirmacao', 'Pago {competencia}', 'Olá {nome}. Total: R$ {total}');
   assert.equal(previsto.ok, true);
   if (previsto.ok) assert.equal(previsto.corpo.includes('Cliente Real'), false);
+});
+
+test('login envia código por WhatsApp quando há telefone de 2FA', async () => {
+  await app().pool.query(`UPDATE configuracao SET telefone_2fa = '5511999887766' WHERE id = 1`);
+  const servidor = await ouvir();
+  const sessao = new SessaoHttp(servidor.base);
+  try {
+    const codigo = await sessao.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' });
+    assert.equal(codigo.status, 200);
+    assert.match(codigo.texto, /Código por WhatsApp/);
+    assert.equal(codigo.texto.includes('5511999887766'), false);
+    assert.equal(correio.enviados.length, 0);
+    const enviado = evolution.enviados.at(-1);
+    assert.ok(enviado);
+    assert.equal(enviado.number, '5511999887766');
+    assert.match(enviado.text, /^Seu código de acesso PagaEu é \d{6}\. Vale 10 minutos e só pode ser usado uma vez\.$/);
+    const digitos = enviado.text.match(/\d{6}/)?.[0];
+    assert.ok(digitos);
+    const painel = await sessao.pedir('POST', '/login/codigo', { codigo: digitos });
+    assert.equal(painel.status, 303);
+    assert.ok(sessao.cookies.get('pagaeu_sessao'));
+  } finally {
+    await servidor.fechar();
+  }
+});
+
+test('login cai no e-mail se o WhatsApp falhar', async () => {
+  await app().pool.query(`UPDATE configuracao SET telefone_2fa = '5511999887766' WHERE id = 1`);
+  evolution.falhar = true;
+  const servidor = await ouvir();
+  const sessao = new SessaoHttp(servidor.base);
+  try {
+    const codigo = await sessao.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' });
+    assert.equal(codigo.status, 200);
+    assert.match(codigo.texto, /Código por e-mail/);
+    const enviado = correio.enviados.at(-1);
+    assert.ok(enviado);
+    const digitos = enviado.text.match(/\d{6}/)?.[0];
+    assert.ok(digitos);
+    const painel = await sessao.pedir('POST', '/login/codigo', { codigo: digitos });
+    assert.equal(painel.status, 303);
+  } finally {
+    await servidor.fechar();
+  }
+});
+
+test('login abre sessão direto com 2FA desligado no env', async () => {
+  app().env.twoFactorEnabled = false;
+  const servidor = await ouvir();
+  const sessao = new SessaoHttp(servidor.base);
+  try {
+    const painel = await sessao.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' });
+    assert.equal(painel.status, 303);
+    assert.ok(sessao.cookies.get('pagaeu_sessao'));
+    assert.equal(sessao.cookies.get('pagaeu_codigo'), undefined);
+  } finally {
+    await servidor.fechar();
+  }
+});
+
+test('configuração grava telefone de 2FA e recusa número inválido', async () => {
+  app().env.twoFactorEnabled = false;
+  const servidor = await ouvir();
+  const sessao = new SessaoHttp(servidor.base);
+  try {
+    await sessao.pedir('POST', '/login', { usuario: 'dono', senha: 'segredo-teste' });
+    const pagina = await sessao.pedir('GET', '/configuracao');
+    const base = {
+      csrf: csrf(pagina.texto),
+      usuario: 'dono',
+      email_dono: 'dono@example.com',
+      smtp_host: 'smtp.example',
+      smtp_porta: '587',
+      smtp_usuario: 'smtp-user',
+      smtp_remetente_nome: 'PagaEu',
+      smtp_remetente_email: 'cobranca@example.com',
+      smtp_criptografia: 'starttls',
+      evolution_url: 'http://evolution.example',
+      evolution_instance: 'pagaeu',
+      pix_provedor: 'nativo',
+      pix_chave: 'erick@example.com',
+      pix_recebedor: 'Erick Vinicius Stelo',
+      pix_cidade: 'Passo Fundo',
+      conciliacao_intervalo_minutos: '60',
+    };
+    const invalido = await sessao.pedir('POST', '/configuracao', { ...base, telefone_2fa: 'abc' });
+    assert.equal(invalido.status, 422);
+    assert.match(invalido.texto, /Telefone para 2FA inválido/);
+    assert.match(invalido.texto, /class="invalido"[^>]*>Telefone para 2FA/);
+    const salvo = await sessao.pedir('POST', '/configuracao', { ...base, telefone_2fa: '11988887777' });
+    assert.equal(salvo.status, 303);
+    const config = await lerConfigPublica(app());
+    assert.equal(config.telefone2fa, '5511988887777');
+    const recarregada = await sessao.pedir('GET', '/configuracao');
+    assert.match(recarregada.texto, /value="5511988887777"/);
+  } finally {
+    await servidor.fechar();
+  }
 });

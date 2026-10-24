@@ -351,7 +351,7 @@ test('baixa manual e cancelamento só na vigente sem posterior', async () => {
   assert.equal((await cancelarCobranca(app(), maioAberto.id, 'acerto', agora)).ok, true);
   assert.equal((await cancelarCobranca(app(), abrilAberto.id, 'acerto', agora)).ok, true);
 
-  app().env.loginCodeDisabled = true;
+  app().env.twoFactorEnabled = false;
   const servidor = await ouvir();
   try {
     const sessao = new SessaoHttp(servidor.base);

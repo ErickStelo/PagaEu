@@ -186,12 +186,13 @@
     evento.preventDefault();
     const botao = evento.submitter;
     const consulta = (form.getAttribute('action') || '').includes('/cobrancas/consultar');
-    const textoBotao = botao?.textContent;
+    const htmlBotao = botao?.innerHTML;
     if (botao) {
       botao.disabled = true;
       if (consulta) {
         botao.classList.add('carregando');
-        botao.textContent = 'Consultando…';
+        const svg = botao.querySelector('.icone');
+        botao.replaceChildren(svg ? svg.cloneNode(true) : document.createTextNode(''), document.createTextNode('Consultando…'));
       }
     }
     enviar(form, botao)
@@ -203,7 +204,7 @@
           botao.disabled = false;
           if (consulta) {
             botao.classList.remove('carregando');
-            if (textoBotao) botao.textContent = textoBotao;
+            if (htmlBotao) botao.innerHTML = htmlBotao;
           }
         }
       });

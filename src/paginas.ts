@@ -1,6 +1,6 @@
 import type { Flash } from './acesso.ts';
 import type { ResultadoConsultaAbertas } from './cobrancas.ts';
-import type { CartaoPessoa, Detalhe, LinhaHistorico, SituacaoPessoa } from './consultas.ts';
+import type { CartaoPessoa, Detalhe, LinhaHistorico, LinhaResumoCobranca, SituacaoPessoa } from './consultas.ts';
 import type { Dashboard, MesGrafico } from './dashboard.ts';
 import { formatarCompetencia, formatarDataHora } from './domain/calendar.ts';
 import { competenciaParaCampo, type SituacaoCobranca } from './domain/painel.ts';
@@ -27,6 +27,87 @@ function e(valor: unknown): string {
   return escapar(valor);
 }
 
+type NomeIcone =
+  | 'abrir'
+  | 'aviso'
+  | 'cancelar'
+  | 'check'
+  | 'consultar'
+  | 'copiar'
+  | 'dashboard'
+  | 'editar'
+  | 'enviar'
+  | 'entrar'
+  | 'engrenagem'
+  | 'excluir'
+  | 'fechar'
+  | 'filtro'
+  | 'gerar'
+  | 'historico'
+  | 'inativar'
+  | 'lista'
+  | 'mail'
+  | 'mais'
+  | 'olho'
+  | 'pessoa'
+  | 'plug'
+  | 'quem'
+  | 'reativar'
+  | 'reabrir'
+  | 'restaurar'
+  | 'reenviar'
+  | 'sair'
+  | 'salvar'
+  | 'templates'
+  | 'voltar';
+
+const TRACOS_ICONE: Record<NomeIcone, string> = {
+  abrir: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
+  aviso: '<path d="m10.29 3.86-8.2 14.2A2 2 0 0 0 3.8 21h16.4a2 2 0 0 0 1.71-2.94l-8.2-14.2a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  cancelar: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  consultar: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  copiar: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16V4a2 2 0 0 1 2-2h10"/>',
+  dashboard: '<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
+  editar: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  enviar: '<path d="M14.5 21.7 12 13 3.3 9.5 21 3Z"/><path d="M12 13 21 3"/>',
+  entrar: '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/>',
+  engrenagem: '<circle cx="12" cy="12" r="3"/><path d="M12 1v2.5M12 20.5V23M4.2 4.2l1.8 1.8M18 18l1.8 1.8M1 12h2.5M20.5 12H23M4.2 19.8 6 18M18 6l1.8-1.8"/>',
+  excluir: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>',
+  fechar: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  filtro: '<path d="M3 5h18l-7 8v5l-4 2v-7Z"/>',
+  gerar: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="M9 15h6"/>',
+  historico: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/>',
+  inativar: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m17 11 5 5"/><path d="m22 11-5 5"/>',
+  lista: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  mais: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  olho: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  pessoa: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/>',
+  plug: '<path d="M8.5 8.5 5 12a5 5 0 0 0 7 7l3.5-3.5"/><path d="m12 12 6-6"/><path d="m15 9 3-3 2 2"/><path d="M9 15l-3 3-2-2"/>',
+  quem: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  reativar: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/>',
+  reabrir: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
+  restaurar: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  reenviar: '<path d="m17 2 4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+  sair: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  salvar: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
+  templates: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
+  voltar: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
+};
+
+function icone(nome: NomeIcone): string {
+  return `<svg class="icone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TRACOS_ICONE[nome]}</svg>`;
+}
+
+function rotulo(nome: NomeIcone, texto: string): string {
+  return `${icone(nome)}${e(texto)}`;
+}
+
+function botaoFechar(): string {
+  return `<button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">${icone('fechar')}</button>`;
+}
+
 function classeCampoInvalido(erros: Record<string, string> | null, nome: string): string {
   return erros?.[nome] ? ' class="invalido"' : '';
 }
@@ -50,9 +131,9 @@ function secaoAtual(caminho: string): Secao {
   return 'quem';
 }
 
-function itemNav(atual: Secao, id: Secao, href: string, nome: string): string {
+function itemNav(atual: Secao, id: Secao, href: string, nome: string, nomeIcone: NomeIcone): string {
   const ativo = atual === id ? ' class="ativo" aria-current="page"' : '';
-  return `<a href="${href}"${ativo}>${nome}</a>`;
+  return `<a href="${href}"${ativo}>${icone(nomeIcone)}<span>${nome}</span></a>`;
 }
 
 export function layout(opcoes: { titulo: string; corpo: string; autenticado: boolean; flash: Flash | null; caminho?: string }): string {
@@ -61,13 +142,13 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     ? `<aside>
         <a class="marca" href="/">PagaEu</a>
         <nav>
-          ${itemNav(atual, 'dashboard', '/', 'Dashboard')}
-          ${itemNav(atual, 'quem', '/quem-deve', 'Quem deve')}
-          ${itemNav(atual, 'historico', '/cobrancas', 'Histórico')}
-          ${itemNav(atual, 'templates', '/templates', 'Templates')}
-          ${itemNav(atual, 'configuracao', '/configuracao', 'Configuração')}
+          ${itemNav(atual, 'dashboard', '/', 'Dashboard', 'dashboard')}
+          ${itemNav(atual, 'quem', '/quem-deve', 'Quem deve', 'quem')}
+          ${itemNav(atual, 'historico', '/cobrancas', 'Cobranças', 'historico')}
+          ${itemNav(atual, 'templates', '/templates', 'Templates', 'templates')}
+          ${itemNav(atual, 'configuracao', '/configuracao', 'Configuração', 'engrenagem')}
         </nav>
-        <form method="post" action="/sair"><button class="sair" type="submit">Sair</button></form>
+        <form method="post" action="/sair"><button class="sair" type="submit">${rotulo('sair', 'Sair')}</button></form>
       </aside>`
     : `<section class="marca-login">
         <p class="olho">Console PIX</p>
@@ -100,12 +181,12 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     body.app { display:grid; grid-template-columns: 240px minmax(0, 1fr); }
     aside { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; gap:18px; padding:22px 14px; background:#0B1220; border-right:1px solid var(--line); }
     .marca, aside .marca { font-family: "Space Grotesk", sans-serif; font-size:1.35rem; font-weight:600; letter-spacing:-.03em; color:var(--ink); text-decoration:none; padding:0 10px; }
-    nav { display:flex; flex-direction:column; gap:4px; }
-    nav a { color:var(--muted); text-decoration:none; font-weight:600; border-radius:8px; padding:10px 12px; }
-    nav a:hover { color:var(--ink); background:rgba(255,255,255,.04); }
-    nav a.ativo { color:var(--ciano); background:rgba(34,211,238,.1); }
+    aside nav { display:flex; flex-direction:column; gap:4px; }
+    aside nav a { display:flex; align-items:center; gap:10px; color:var(--muted); text-decoration:none; font-weight:600; border-radius:8px; padding:10px 12px; }
+    aside nav a:hover { color:var(--ink); background:rgba(255,255,255,.04); }
+    aside nav a.ativo { color:var(--ciano); background:rgba(34,211,238,.1); }
     aside form { margin-top:auto; }
-    button.sair { width:100%; text-align:left; background:transparent; color:var(--muted); border:1px solid var(--line); }
+    button.sair { width:100%; justify-content:flex-start; background:transparent; color:var(--muted); border:1px solid var(--line); }
     main { padding:32px 32px 72px; min-width:0; }
     h1, h2 { font-family: "Space Grotesk", sans-serif; font-weight:600; letter-spacing:-.03em; }
     h1 { margin:0 0 8px; font-size:2rem; }
@@ -113,6 +194,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .sub, .trilha { color:var(--muted); margin:0 0 22px; }
     .trilha { margin-bottom:8px; font-size:.92rem; }
     a { color:var(--ciano); }
+    a:has(> .icone) { display:inline-flex; align-items:center; gap:6px; }
     .metricas { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-bottom:16px; }
     .metrica { background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
     .metrica span { display:block; color:var(--muted); font-size:.8rem; letter-spacing:.04em; text-transform:uppercase; }
@@ -170,7 +252,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .tags { display:flex; gap:6px; flex-wrap:wrap; }
     .alerta-linha { color:var(--amber); font-size:.8rem; margin-top:4px; }
     button.compacto { padding:5px 10px; font-size:.84rem; }
-    .link-acao { font-weight:600; padding:0 4px; }
+    .link-acao { display:inline-flex; align-items:center; gap:5px; font-weight:600; padding:0 4px; }
     @media (max-width: 1080px) {
       .graficos, .acoes-dashboard { grid-template-columns:1fr; }
     }
@@ -189,7 +271,8 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible { outline:2px solid var(--ciano); outline-offset:2px; }
     textarea { width:100%; min-height:180px; }
     textarea.codigo { min-height:72px; }
-    button, .botao { background:var(--ciano); color:var(--ciano-ink); border:0; border-radius:8px; padding:9px 14px; font:inherit; font-weight:600; cursor:pointer; text-decoration:none; display:inline-block; }
+    button, .botao { background:var(--ciano); color:var(--ciano-ink); border:0; border-radius:8px; padding:9px 14px; font:inherit; font-weight:600; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:8px; }
+    .icone { width:1.05em; height:1.05em; flex:0 0 auto; }
     button.secundario, .botao.secundario { background:transparent; color:var(--ink); border:1px solid var(--line); }
     button.perigo { background:#7F1D1D; color:#FEE2E2; }
     button.destaque { background:#047857; color:#ECFDF5; }
@@ -217,9 +300,65 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     input[type="checkbox"], input[type="radio"] { accent-color:var(--ciano); width:1rem; height:1rem; }
     .codigo { font-family:"JetBrains Mono", ui-monospace, monospace; word-break:break-all; }
     .ficha { display:grid; grid-template-columns:minmax(0, 1fr) minmax(260px, 340px); gap:16px; align-items:start; }
+    .ficha-trilha { display:flex; flex-direction:row; align-items:center; gap:8px; margin:0 0 16px; font-size:.92rem; color:var(--muted); white-space:nowrap; }
+    .ficha-trilha a { color:var(--muted); text-decoration:none; font-weight:500; padding:0; border-radius:0; background:transparent; }
+    .ficha-trilha a:hover { color:var(--ink); background:transparent; }
+    .ficha-trilha strong { color:var(--ink); font-weight:600; }
+    .ficha-cabeca { display:flex; justify-content:space-between; align-items:center; gap:24px; flex-wrap:wrap; margin-bottom:8px; }
+    .ficha-identidade { display:flex; gap:14px; align-items:center; min-width:0; }
+    .ficha-avatar { width:48px; height:48px; border-radius:8px; background:#0B1220; border:1px solid var(--line); display:grid; place-items:center; font-family:"Space Grotesk",sans-serif; font-weight:600; font-size:.95rem; letter-spacing:.02em; color:var(--ciano); flex-shrink:0; }
+    .ficha-identidade h1 { margin:0 0 4px; font-size:1.75rem; line-height:1.15; }
+    .ficha-identidade .sub { margin:0; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .ficha-status { display:inline-flex; align-items:center; gap:6px; color:var(--ok); font-weight:600; }
+    .ficha-status i { width:8px; height:8px; border-radius:50%; background:var(--ok); display:inline-block; }
+    .ficha-status.inativa { color:var(--gray); }
+    .ficha-status.inativa i { background:var(--gray); }
+    .ficha-acoes-topo { display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
+    .ficha-gerar { display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin:0; padding:8px 10px; background:#0B1220; border:1px solid var(--line); border-radius:8px; }
+    .ficha-gerar label { flex:0 0 auto; min-width:0; gap:4px; font-size:.75rem; letter-spacing:.04em; text-transform:uppercase; }
+    .ficha-gerar input { width:4.6rem; height:36px; padding:6px 8px; }
+    .ficha-gerar button, .ficha-acoes-topo > form > button { height:36px; }
+    .ficha-abas { display:flex; gap:2px; border-bottom:1px solid var(--line); margin:18px 0 18px; }
+    .ficha-aba { color:var(--muted); text-decoration:none; font-family:"Space Grotesk",sans-serif; font-weight:600; padding:12px 16px; border-bottom:2px solid transparent; margin-bottom:-1px; }
+    .ficha-aba:hover { color:var(--ink); }
+    .ficha-aba.ativa { color:var(--ciano); border-bottom-color:var(--ciano); }
+    .ficha-aba .contagem { color:var(--gray); font-weight:500; margin-left:6px; font-family:Geist,sans-serif; }
+    .ficha-painel .bloco { margin-bottom:0; }
+    .ficha-form-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px 18px; }
+    .ficha-form-grid > label { gap:6px; }
+    .ficha-form-grid input { height:38px; background:#070B14; }
+    .ficha-form-grid .linha-inteira { grid-column:1 / -1; }
+    .ficha-painel form.bloco > .bloco-cabeca { margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid var(--line); }
+    .ficha-tabela { padding:0; overflow:hidden; }
+    .ficha-tabela > .bloco-cabeca { margin:0; padding:16px 18px; border-bottom:1px solid var(--line); align-items:center; }
+    .ficha-tabela > .bloco-cabeca p { margin:4px 0 0; }
+    .ficha-tabela table { min-width:720px; width:100%; }
+    .ficha-tabela th, .ficha-tabela td { vertical-align:middle; padding:12px 16px; }
+    .ficha-tabela th:last-child, .ficha-tabela td:last-child { width:auto; white-space:nowrap; }
+    .ficha-tabela th { background:#0B1220; letter-spacing:.06em; }
+    .ficha-tabela td.dinheiro, .ficha-tabela th.num { text-align:right; }
+    .ficha-tabela tbody tr:hover { background:#162238; }
+    .ficha-tabela .acoes-celula { display:flex; gap:8px; justify-content:flex-end; align-items:center; flex-wrap:nowrap; margin:0; }
+    .ficha-tabela .acoes-celula form { margin:0; }
+    .ficha-tabela tfoot td { background:rgba(255,255,255,.03); border-bottom:0; padding:14px 16px; }
+    .ficha-metricas { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; margin:16px 0 4px; }
+    .ficha-metricas .metrica strong { font-size:1.15rem; }
+    .modal-ficha { max-width:min(560px, calc(100vw - 32px)); }
+    .modal-ficha form { gap:12px; }
+    .modal-itens-cobranca { max-width:min(560px, calc(100vw - 32px)); }
+    .modal-itens-cobranca table { margin:0; }
+    .modal-itens-cobranca th:last-child, .modal-itens-cobranca td:last-child { width:auto; }
+    .modal-itens-cobranca tfoot td { border-bottom:0; font-weight:600; }
+    input[type="checkbox"] { appearance:none; width:16px; height:16px; margin:0; border:1px solid rgba(255,255,255,.22); border-radius:4px; background:#070B14; display:inline-grid; place-items:center; }
+    input[type="checkbox"]:checked { background:var(--ciano); border-color:var(--ciano); }
+    input[type="checkbox"]:checked::after { content:""; width:8px; height:5px; border-left:2px solid var(--ciano-ink); border-bottom:2px solid var(--ciano-ink); transform:rotate(-45deg) translateY(-1px); }
+    @media (max-width: 900px) {
+      .ficha-form-grid, .ficha-metricas { grid-template-columns:1fr; }
+      .ficha-cabeca { align-items:flex-start; }
+    }
     .lateral { display:grid; gap:14px; }
     .lateral .acoes { justify-content:flex-start; }
-    .lateral .acoes .botao, .lateral .acoes button { width:100%; text-align:center; }
+    .lateral .acoes .botao, .lateral .acoes button { width:100%; justify-content:center; }
     .timeline-mensagens { list-style:none; margin:0; padding:4px 0 0; }
     .timeline-mensagens li { position:relative; margin:0; padding:0 0 18px 26px; }
     .timeline-mensagens li::before { content:""; position:absolute; left:5px; top:5px; width:10px; height:10px; border-radius:50%; background:var(--gray); box-shadow:0 0 0 3px var(--paper); }
@@ -236,7 +375,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     .modal form, .modal .modal-corpo { padding:20px 22px 22px; display:grid; gap:14px; margin:0; }
     .modal-cabeca { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
     .modal-cabeca h2 { margin:0; font-size:1.15rem; }
-    .modal-fechar-x { min-width:2.25rem; padding:2px 8px; line-height:1.2; }
+    .modal-fechar-x { min-width:2.25rem; min-height:2.25rem; padding:6px; }
     .modal-rodape { justify-content:flex-end; margin-top:4px; }
     .modal-largo { max-width:min(480px, calc(100vw - 32px)); }
     .modal-mensagem { max-width:min(640px, calc(100vw - 32px)); max-height:min(85vh, 720px); overflow:auto; }
@@ -275,7 +414,7 @@ export function layout(opcoes: { titulo: string; corpo: string; autenticado: boo
     @media (max-width: 720px) {
       body.app, body.porta { display:block; }
       aside { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); }
-      nav { flex-direction:row; flex-wrap:wrap; }
+      aside nav { flex-direction:row; flex-wrap:wrap; }
       aside form { margin-top:12px; }
       main, .marca-login { padding:20px 16px 48px; }
       .metrica, .card { margin-bottom:12px; }
@@ -365,8 +504,8 @@ function canaisMensagemFlags(email: boolean, whatsapp: boolean): { email: boolea
   return { email, whatsapp };
 }
 
-function botaoModal(id: string, rotulo: string, classe = 'secundario'): string {
-  return `<button type="button" class="${classe}" data-modal-abrir="${e(id)}">${e(rotulo)}</button>`;
+function botaoModal(id: string, texto: string, classe = 'secundario', nomeIcone: NomeIcone = 'abrir'): string {
+  return `<button type="button" class="${classe}" data-modal-abrir="${e(id)}">${rotulo(nomeIcone, texto)}</button>`;
 }
 
 function modalMensagem(
@@ -389,13 +528,13 @@ function modalMensagem(
       <input type="hidden" name="tipo" value="${e(tipo)}">
       <header class="modal-cabeca">
         <h2>${e(titulo)}</h2>
-        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+        ${botaoFechar()}
       </header>
       <p class="muted">Marque os canais em que deseja enviar.</p>
       <div class="checks">${marcadores}</div>
       <div class="acoes modal-rodape">
-        <button type="button" class="secundario modal-fechar">Voltar</button>
-        <button type="submit">${e(textoEnviar)}</button>
+        <button type="button" class="secundario modal-fechar">${rotulo('voltar', 'Voltar')}</button>
+        <button type="submit">${rotulo('enviar', textoEnviar)}</button>
       </div>
     </form>
   </dialog>`;
@@ -413,12 +552,12 @@ function modalBaixaManual(detalhe: Detalhe, csrfToken: string): string {
       ${csrf(csrfToken)}
       <header class="modal-cabeca">
         <h2>Confirmar baixa</h2>
-        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+        ${botaoFechar()}
       </header>
       ${pixOpcoes ? `<p class="muted">O que fazer com o PIX ativo?</p>${pixOpcoes}` : '<p class="muted">A cobrança será marcada como paga manualmente.</p>'}
       <div class="acoes modal-rodape">
-        <button type="button" class="secundario modal-fechar">Voltar</button>
-        <button class="destaque" type="submit">Confirmar baixa</button>
+        <button type="button" class="secundario modal-fechar">${rotulo('voltar', 'Voltar')}</button>
+        <button class="destaque" type="submit">${rotulo('check', 'Confirmar baixa')}</button>
       </div>
     </form>
   </dialog>`;
@@ -432,12 +571,12 @@ function modalReabrirCobranca(detalhe: Detalhe, csrfToken: string): string {
       ${csrf(csrfToken)}
       <header class="modal-cabeca">
         <h2>Reabrir cobrança</h2>
-        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+        ${botaoFechar()}
       </header>
       <p class="muted">Volta a cobrança vigente para em aberto, remove o registro local da baixa e recoloca o PIX aprovado como pendente (PIX nativo perde o vínculo com o pagamento no Mercado Pago). Não estorna dinheiro na conta.</p>
       <div class="acoes modal-rodape">
-        <button type="button" class="secundario modal-fechar">Voltar</button>
-        <button class="perigo" type="submit">Confirmar reabertura</button>
+        <button type="button" class="secundario modal-fechar">${rotulo('voltar', 'Voltar')}</button>
+        <button class="perigo" type="submit">${rotulo('reabrir', 'Confirmar reabertura')}</button>
       </div>
     </form>
   </dialog>`;
@@ -452,12 +591,12 @@ function modalCancelarCobranca(detalhe: Detalhe, csrfToken: string, motivo: stri
       ${csrf(csrfToken)}
       <header class="modal-cabeca">
         <h2>Cancelar cobrança</h2>
-        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+        ${botaoFechar()}
       </header>
       <label>Motivo<input name="motivo" required maxlength="500" value="${e(motivo)}"></label>
       <div class="acoes modal-rodape">
-        <button type="button" class="secundario modal-fechar">Voltar</button>
-        <button class="perigo" type="submit">Confirmar cancelamento</button>
+        <button type="button" class="secundario modal-fechar">${rotulo('voltar', 'Voltar')}</button>
+        <button class="perigo" type="submit">${rotulo('cancelar', 'Confirmar cancelamento')}</button>
       </div>
     </form>
   </dialog>`;
@@ -492,10 +631,10 @@ function acoesDaCobranca(
   opcoes: { copia: string | null; email: boolean; whatsapp: boolean },
 ): string {
   const copiar = opcoes.copia
-    ? `<button type="button" class="secundario" data-texto="${e(opcoes.copia)}">Copiar chave PIX</button>`
+    ? `<button type="button" class="secundario" data-texto="${e(opcoes.copia)}">${rotulo('copiar', 'Copiar chave PIX')}</button>`
     : '';
   const reenviar = opcoes.email || opcoes.whatsapp
-    ? botaoModal(`modal-reenviar-cobranca-${id}`, 'Reenviar')
+    ? botaoModal(`modal-reenviar-cobranca-${id}`, 'Reenviar', 'secundario', 'reenviar')
     : '';
   const modal = opcoes.email || opcoes.whatsapp
     ? modalMensagem(`modal-reenviar-cobranca-${id}`, id, csrfToken, 'cobranca', 'Reenviar cobrança', 'Enviar', canaisMensagemFlags(opcoes.email, opcoes.whatsapp))
@@ -507,34 +646,34 @@ function acoesDaCobranca(
 function botoesAcaoDetalhe(detalhe: Detalhe, csrfToken: string, motivoCancelamento = ''): string {
   const partes: string[] = [];
   if (detalhe.pixAtivo?.copia) {
-    partes.push(`<button type="button" class="secundario" data-texto="${e(detalhe.pixAtivo.copia)}">Copiar chave PIX</button>`);
+    partes.push(`<button type="button" class="secundario" data-texto="${e(detalhe.pixAtivo.copia)}">${rotulo('copiar', 'Copiar chave PIX')}</button>`);
   }
   if (canaisMensagem(detalhe, 'cobranca').length) {
-    partes.push(botaoModal(`modal-reenviar-cobranca-${detalhe.id}`, 'Reenviar'));
+    partes.push(botaoModal(`modal-reenviar-cobranca-${detalhe.id}`, 'Reenviar', 'secundario', 'reenviar'));
   }
   if (canaisMensagem(detalhe, 'inadimplencia').length) {
-    partes.push(botaoModal(`modal-inadimplencia-${detalhe.id}`, 'Enviar inadimplência'));
+    partes.push(botaoModal(`modal-inadimplencia-${detalhe.id}`, 'Enviar inadimplência', 'secundario', 'aviso'));
   }
   if (canaisMensagem(detalhe, 'confirmacao').length) {
-    partes.push(botaoModal(`modal-confirmacao-${detalhe.id}`, 'Reenviar confirmação'));
+    partes.push(botaoModal(`modal-confirmacao-${detalhe.id}`, 'Reenviar confirmação', 'secundario', 'mail'));
   }
   if (detalhe.acoes.novoPix) {
-    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/novo-pix">${csrf(csrfToken)}<button type="submit">Gerar novo PIX</button></form>`);
+    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/novo-pix">${csrf(csrfToken)}<button type="submit">${rotulo('gerar', 'Gerar novo PIX')}</button></form>`);
   }
   if (detalhe.acoes.invalidarPix) {
-    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/invalidar-pix">${csrf(csrfToken)}<button class="secundario" type="submit">Invalidar PIX</button></form>`);
+    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/invalidar-pix">${csrf(csrfToken)}<button class="secundario" type="submit">${rotulo('cancelar', 'Invalidar PIX')}</button></form>`);
   }
   if (detalhe.acoes.tentarEmissao) {
-    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/tentar-emissao">${csrf(csrfToken)}<button type="submit">Tentar emissão de novo</button></form>`);
+    partes.push(`<form method="post" action="/cobrancas/${e(detalhe.id)}/tentar-emissao">${csrf(csrfToken)}<button type="submit">${rotulo('reenviar', 'Tentar emissão de novo')}</button></form>`);
   }
   if (detalhe.acoes.baixaManual) {
-    partes.push(botaoModal(`modal-baixa-${detalhe.id}`, 'Confirmar baixa', 'destaque'));
+    partes.push(botaoModal(`modal-baixa-${detalhe.id}`, 'Confirmar baixa', 'destaque', 'check'));
   }
   if (detalhe.acoes.reabrir) {
-    partes.push(botaoModal(`modal-reabrir-${detalhe.id}`, 'Reabrir cobrança', 'secundario'));
+    partes.push(botaoModal(`modal-reabrir-${detalhe.id}`, 'Reabrir cobrança', 'secundario', 'reabrir'));
   }
   if (detalhe.acoes.cancelar && !motivoCancelamento) {
-    partes.push(botaoModal(`modal-cancelar-${detalhe.id}`, 'Cancelar cobrança', 'perigo'));
+    partes.push(botaoModal(`modal-cancelar-${detalhe.id}`, 'Cancelar cobrança', 'perigo', 'cancelar'));
   }
   return partes.join('');
 }
@@ -553,6 +692,22 @@ export type RascunhoPessoa = {
 
 export type RascunhoMes = { mes: string; ano: string };
 
+export type AbaFicha = 'informacoes' | 'lancamentos' | 'historico';
+
+export type FichaPessoaDados = {
+  aba: AbaFicha;
+  pessoa: Pessoa;
+  diaEfetivo: number;
+  itens: Item[];
+  itensUsados: Set<string>;
+  historico: LinhaHistorico[];
+  linhasCobranca: Record<string, LinhaResumoCobranca[]>;
+  csrfToken: string;
+  rascunhoPessoa?: RascunhoPessoa | null;
+  rascunhoItem?: RascunhoItem | null;
+  geracao?: RascunhoMes | null;
+};
+
 export type RascunhoItem = {
   id: string | null;
   descricao: string;
@@ -566,6 +721,7 @@ export type RascunhoItem = {
 export type RascunhoConfig = {
   usuario: string;
   emailDono: string;
+  telefone2fa: string;
   smtpHost: string;
   smtpPorta: string;
   smtpUsuario: string;
@@ -589,23 +745,33 @@ export type RascunhoTemplate = {
   destino: 'previa' | 'bloco';
 };
 
-export function paginaLogin(erro: string | null, etapaCodigo: boolean, valor = ''): string {
+export function paginaLogin(
+  erro: string | null,
+  etapaCodigo: boolean,
+  valor = '',
+  canal: 'whatsapp' | 'email' = 'email',
+): string {
   const aviso = erro ? `<p class="alerta">${e(erro)}</p>` : '';
   if (etapaCodigo) {
-    return `<h1>Código por e-mail</h1><p class="sub">Enviamos um código de 6 dígitos. Ele vale 10 minutos.</p>${aviso}
+    const titulo = canal === 'whatsapp' ? 'Código por WhatsApp' : 'Código por e-mail';
+    const sub =
+      canal === 'whatsapp'
+        ? 'Enviamos um código de 6 dígitos no WhatsApp. Ele vale 10 minutos.'
+        : 'Enviamos um código de 6 dígitos. Ele vale 10 minutos.';
+    return `<h1>${titulo}</h1><p class="sub">${sub}</p>${aviso}
       <form method="post" action="/login/codigo">
         <label>Código<input name="codigo" inputmode="numeric" autocomplete="one-time-code" required value="${e(valor)}"></label>
-        <div class="acoes"><button type="submit">Entrar</button></div>
+        <div class="acoes"><button type="submit">${rotulo('entrar', 'Entrar')}</button></div>
       </form>
-      <form method="post" action="/login/reenviar"><div class="acoes"><button class="secundario" type="submit">Reenviar código</button></div></form>`;
+      <form method="post" action="/login/reenviar"><div class="acoes"><button class="secundario" type="submit">${rotulo('reenviar', 'Reenviar código')}</button></div></form>`;
   }
   return `<h1>Entrar</h1><p class="sub">Painel do dono.</p>${aviso}
     <form method="post" action="/login">
       <label>Usuário<input name="usuario" autocomplete="username" required value="${e(valor)}"></label>
       <label>Senha<input name="senha" type="password" autocomplete="current-password" required></label>
-      <div class="acoes"><button type="submit">Continuar</button></div>
+      <div class="acoes"><button type="submit">${rotulo('entrar', 'Continuar')}</button></div>
     </form>
-    <p class="muted">O código de 6 dígitos chega no e-mail do dono.</p>`;
+    <p class="muted">Se o 2FA estiver ligado, o código de 6 dígitos chega no WhatsApp ou no e-mail do dono.</p>`;
 }
 
 function linhaConsulta(rotulo: string, valor: string | number): string {
@@ -658,13 +824,13 @@ export function modalResultadoConsultaPagamentos(resultado: ResultadoConsultaAbe
     <div class="modal-corpo">
       <header class="modal-cabeca">
         <h2>Resultado da consulta</h2>
-        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+        ${botaoFechar()}
       </header>
       ${intro}
       ${teveAtividade ? `<div class="consulta-resumo">${blocos}</div>` : ''}
       ${falhas}
       <div class="acoes modal-rodape">
-        <button type="button" class="secundario modal-fechar">Fechar</button>
+        <button type="button" class="secundario modal-fechar">${rotulo('fechar', 'Fechar')}</button>
       </div>
     </div>
   </dialog>`;
@@ -804,13 +970,13 @@ export function paginaDashboard(
       <td>${e(formatarDia(linha.venceEm))}</td>
       <td>${etiqueta(linha.diasAtraso === 1 ? '1 dia' : `${linha.diasAtraso} dias`, 'atrasada')}</td>
       <td class="dinheiro num">${formatarReais(linha.valorCentavos)}</td>
-      <td><a href="/cobrancas/${e(linha.cobrancaId)}">Abrir cobrança</a></td>
+      <td><a href="/cobrancas/${e(linha.cobrancaId)}">${rotulo('abrir', 'Abrir cobrança')}</a></td>
     </tr>`).join('');
   return `<div class="topo"><div><h1>Dashboard</h1><p class="sub">${e(textoPeriodo)}</p></div>
     <form class="filtro-periodo" method="get" action="/">
       <label>De<input type="month" name="de" value="${e(competenciaParaCampo(periodo.inicio))}" placeholder="AAAA-MM" required></label>
       <label>Até<input type="month" name="ate" value="${e(competenciaParaCampo(periodo.fim))}" placeholder="AAAA-MM" required></label>
-      <button class="secundario" type="submit">Filtrar</button>
+      <button class="secundario" type="submit">${rotulo('filtro', 'Filtrar')}</button>
     </form></div>
     <section class="metricas" aria-label="Indicadores do período">
       ${metricaDashboard('Em aberto', formatarReais(totais.aberta.valorCentavos), 'ciano', `${contarCobrancas(totais.aberta.quantidade)} no prazo`)}
@@ -837,14 +1003,14 @@ export function paginaDashboard(
         <div class="row">
           <label>Mês<select name="mes" required>${opcoesMes}</select></label>
           <label>Ano<input name="ano" type="number" min="2000" max="2100" required value="${e(anoGeracao)}"></label>
-          <button type="submit">Gerar cobranças</button>
+          <button type="submit">${rotulo('gerar', 'Gerar cobranças')}</button>
         </div>
       </form>
       <section class="bloco">
         <h2>Consultar pagamentos</h2>
         <p class="muted">Concilia PIX nativo pelo extrato do Mercado Pago e consulta os PIX emitidos pelo gateway. Cobrança quitada dispara a confirmação nos canais ligados.</p>
         <form method="post" action="/cobrancas/consultar">${csrf(csrfToken)}
-          <div class="acoes"><button type="submit">Consultar cobranças abertas</button></div>
+          <div class="acoes"><button type="submit">${rotulo('consultar', 'Consultar cobranças abertas')}</button></div>
         </form>
       </section>
     </div>
@@ -871,11 +1037,9 @@ function linhaQuemDeve(cartao: CartaoPessoa, csrfToken: string): string {
   const idModal = cartao.cobrancaId ? `modal-reenviar-cobranca-${cartao.cobrancaId}` : '';
   const podeReenviar = Boolean(cartao.cobrancaId && (cartao.podeEmail || cartao.podeWhatsapp));
   const acoes = [
-    cartao.copiaPix ? `<button type="button" class="secundario compacto" data-texto="${e(cartao.copiaPix)}">Copiar PIX</button>` : '',
-    podeReenviar ? botaoModal(idModal, 'Reenviar', 'secundario compacto') : '',
-    cartao.cobrancaId
-      ? `<a class="link-acao" href="/cobrancas/${e(cartao.cobrancaId)}">Abrir</a>`
-      : `<a class="link-acao" href="/pessoas/${e(cartao.pessoa.id)}">Abrir</a>`,
+    cartao.copiaPix ? `<button type="button" class="secundario compacto" data-texto="${e(cartao.copiaPix)}">${rotulo('copiar', 'Copiar PIX')}</button>` : '',
+    podeReenviar ? botaoModal(idModal, 'Reenviar', 'secundario compacto', 'reenviar') : '',
+    `<a class="link-acao" href="/pessoas/${e(cartao.pessoa.id)}">${rotulo('abrir', 'Abrir')}</a>`,
   ].join('');
   const modal = podeReenviar && cartao.cobrancaId
     ? modalMensagem(idModal, cartao.cobrancaId, csrfToken, 'cobranca', 'Reenviar cobrança', 'Enviar', canaisMensagemFlags(cartao.podeEmail, cartao.podeWhatsapp))
@@ -897,10 +1061,6 @@ function linhaQuemDeve(cartao: CartaoPessoa, csrfToken: string): string {
 }
 
 export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string): string {
-  const emAberto = cartoes
-    .filter((cartao) => cartao.situacao === 'aberta' || cartao.situacao === 'atrasada')
-    .reduce((soma, cartao) => soma + cartao.valorCentavos, 0);
-  const pessoas = cartoes.length === 1 ? '1 pessoa' : `${cartoes.length} pessoas`;
   const corpo = cartoes.length
     ? `${cartoes.map((cartao) => linhaQuemDeve(cartao, csrfToken)).join('')}
        <tr data-filtro-vazio hidden><td colspan="7" class="muted">Nenhuma pessoa encontrada com esse filtro.</td></tr>`
@@ -916,67 +1076,27 @@ export function paginaQuemDeve(cartoes: CartaoPessoa[], csrfToken: string): stri
         <option value="sem_cobranca">Sem cobrança</option>
         <option value="inativa">Inativa</option>
       </select></label>
-      <a class="botao" href="/pessoas/nova">Nova pessoa</a>
+      <a class="botao" href="/pessoas/nova">${rotulo('pessoa', 'Nova pessoa')}</a>
     </div></div>
     <div class="bloco tabela-bloco">
       <table class="tabela-pessoas">
         <thead><tr><th>Pessoa</th><th>Competência</th><th class="num">Valor mais recente</th><th>Situação</th><th>PIX</th><th>Envio</th><th>Ações</th></tr></thead>
         <tbody>${corpo}</tbody>
-        <tfoot><tr><td colspan="7"><strong class="dinheiro ciano">${formatarReais(emAberto)}</strong> em aberto · ${e(pessoas)}</td></tr></tfoot>
       </table>
     </div>`;
 }
 
-export function paginaPessoa(
-  pessoa: Pessoa | null,
-  efetivo: number | null,
-  csrfToken: string,
-  itensHref: string | null,
-  rascunho: RascunhoPessoa | null = null,
-  geracao: RascunhoMes | null = null,
-): string {
-  const nome = rascunho?.nome ?? pessoa?.nome ?? '';
-  const whatsapp = rascunho?.whatsapp ?? pessoa?.whatsapp ?? '';
-  const email = rascunho?.email ?? pessoa?.email ?? '';
-  const cpf = rascunho?.cpf ?? pessoa?.cpf ?? '';
-  const dia = rascunho ? rascunho.diaCobranca : String(pessoa?.dia_cobranca_pendente ?? pessoa?.dia_cobranca ?? 10);
-  const validade = rascunho ? rascunho.validadePixDias : String(pessoa?.validade_pix_dias ?? 10);
-  const avisoDias = rascunho ? rascunho.diasAviso : String(pessoa?.dias_aviso_inadimplencia ?? 5);
-  const emailLigado = rascunho ? rascunho.canalEmail : !pessoa || pessoa.canal_email;
-  const whatsappLigado = rascunho ? rascunho.canalWhatsapp : !pessoa || pessoa.canal_whatsapp;
-  return `<h1>${pessoa ? e(pessoa.nome) : 'Nova pessoa'}</h1>
-    ${pessoa ? `<p class="sub">Dia efetivo deste mês: ${efetivo}.${pessoa.dia_cobranca_pendente ? ` Dia ${pessoa.dia_cobranca_pendente} vale a partir de ${String(pessoa.dia_pendente_mes).padStart(2, '0')}/${pessoa.dia_pendente_ano}.` : ''}</p>` : '<p class="sub">E-mail e WhatsApp começam ligados. O PIX vale 10 dias e o aviso sai 5 dias depois do vencimento.</p>'}
-    <form class="bloco" method="post" action="${pessoa ? `/pessoas/${e(pessoa.id)}` : '/pessoas'}">
-      ${csrf(csrfToken)}
-      <div class="row">
-        <label>Nome<input name="nome" required maxlength="120" value="${e(nome)}"></label>
-        <label>WhatsApp<input name="whatsapp" required value="${e(whatsapp)}" placeholder="11999999999"></label>
-        <label>E-mail<input name="email" type="email" required value="${e(email)}"></label>
-        <label>CPF<input name="cpf" value="${e(cpf)}" placeholder="opcional"></label>
-        <label>Dia de cobrança<input name="dia_cobranca" type="number" min="1" max="31" required value="${e(dia)}"></label>
-        <label>Validade do PIX (dias)<input name="validade_pix_dias" type="number" min="1" max="30" required value="${e(validade)}"></label>
-        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}"></label>
-      </div>
-      <div class="checks">
-        <label><input type="checkbox" name="canal_email" value="1" ${emailLigado ? 'checked' : ''}> E-mail</label>
-        <label><input type="checkbox" name="canal_whatsapp" value="1" ${whatsappLigado ? 'checked' : ''}> WhatsApp</label>
-      </div>
-      <div class="acoes"><button type="submit">Salvar</button></div>
-    </form>
-    ${pessoa ? `<div class="acoes">
-      <form method="post" action="/pessoas/${e(pessoa.id)}/ativa">${csrf(csrfToken)}<input type="hidden" name="ativa" value="${pessoa.ativa ? '0' : '1'}"><button class="secundario" type="submit">${pessoa.ativa ? 'Inativar' : 'Reativar'}</button></form>
-      <a class="botao secundario" href="${e(itensHref)}">Itens</a>
-      <a class="botao secundario" href="/cobrancas?pessoa=${e(pessoa.id)}">Histórico</a>
-    </div>
-    <form class="bloco" method="post" action="/pessoas/${e(pessoa.id)}/gerar">
-      ${csrf(csrfToken)}
-      <h2>Gerar cobrança</h2>
-      <div class="row">
-        <label>Mês<input name="mes" type="number" min="1" max="12" required value="${e(geracao?.mes ?? '')}"></label>
-        <label>Ano<input name="ano" type="number" min="2000" max="2100" required value="${e(geracao?.ano ?? '')}"></label>
-        <button type="submit">Gerar cobrança</button>
-      </div>
-    </form>` : ''}`;
+function monograma(nome: string): string {
+  const partes = nome.trim().split(/\s+/).filter(Boolean);
+  if (!partes.length) return '??';
+  if (partes.length === 1) return partes[0].slice(0, 2).toUpperCase();
+  return `${partes[0][0] ?? ''}${partes[partes.length - 1][0] ?? ''}`.toUpperCase();
+}
+
+function abaFicha(href: string, id: AbaFicha, atual: AbaFicha, rotulo: string, contador?: number): string {
+  const ativa = atual === id ? ' ativa' : '';
+  const badge = contador !== undefined ? `<span class="contagem">${contador}</span>` : '';
+  return `<a class="ficha-aba${ativa}" href="${href}?aba=${id}">${rotulo}${badge}</a>`;
 }
 
 function valoresItem(item: Item | null, rascunho: RascunhoItem | null, novo: boolean): RascunhoItem {
@@ -999,45 +1119,283 @@ function fimExibido(mes: number | null, ano: number | null): string {
   return `${String(mes).padStart(2, '0')}/${ano}`;
 }
 
-export function paginaItens(pessoa: Pessoa, itens: Item[], usados: Set<string>, csrfToken: string, rascunho: RascunhoItem | null = null): string {
-  const linhas = itens.map((item) => {
-    const valores = valoresItem(item, rascunho, false);
-    return `<tr>
-      <td>${e(item.descricao)}</td>
-      <td class="dinheiro">${formatarReais(item.valor_centavos)}</td>
-      <td>${String(item.inicio_mes).padStart(2, '0')}/${item.inicio_ano}</td>
-      <td>${fimExibido(item.fim_mes, item.fim_ano)}</td>
-      <td>${usados.has(item.id) ? 'em cobrança' : `<form method="post" action="/itens/${e(item.id)}/excluir">${csrf(csrfToken)}<button class="secundario" type="submit">Excluir</button></form>`}</td>
-    </tr>
-    <tr><td colspan="5">
-      <form method="post" action="/itens/${e(item.id)}">${csrf(csrfToken)}
-        <div class="row">
-          <input type="hidden" name="pessoa_id" value="${e(pessoa.id)}">
-          <label>Descrição<input name="descricao" maxlength="200" required value="${e(valores.descricao)}"></label>
-          <label>Valor<input name="valor" required value="${e(valores.valor)}"></label>
-          <label>Início mês<input name="inicio_mes" type="number" min="1" max="12" value="${e(valores.inicioMes)}"></label>
-          <label>Início ano<input name="inicio_ano" type="number" min="2000" max="2100" value="${e(valores.inicioAno)}"></label>
-          <label>Fim mês<input name="fim_mes" type="number" min="1" max="12" placeholder="opcional" value="${e(valores.fimMes)}"></label>
-          <label>Fim ano<input name="fim_ano" type="number" min="2000" max="2100" placeholder="opcional" value="${e(valores.fimAno)}"></label>
-          <button type="submit">Atualizar</button>
+function modalLancamento(
+  pessoaId: string,
+  csrfToken: string,
+  valores: RascunhoItem,
+  opcoes: { idModal: string; titulo: string; action: string; inicial?: boolean },
+): string {
+  const inicial = opcoes.inicial ? ' data-modal-inicial' : '';
+  const inicioCompetencia =
+    valores.inicioMes && valores.inicioAno
+      ? `${String(valores.inicioMes).padStart(2, '0')}/${valores.inicioAno}`
+      : '';
+  const fimCompetencia =
+    valores.fimMes && valores.fimAno ? `${String(valores.fimMes).padStart(2, '0')}/${valores.fimAno}` : '';
+  return `<dialog class="modal modal-ficha" id="${e(opcoes.idModal)}"${inicial}>
+    <form method="post" action="${e(opcoes.action)}">
+      ${csrf(csrfToken)}
+      ${valores.id ? `<input type="hidden" name="pessoa_id" value="${e(pessoaId)}">` : ''}
+      <header class="modal-cabeca">
+        <div>
+          <h2>${e(opcoes.titulo)}</h2>
+          <p class="muted pequeno">O fim é opcional. Sem ele, o item continua em todo mês a partir do início.</p>
         </div>
-      </form>
-    </td></tr>`;
-  }).join('');
-  const novo = valoresItem(null, rascunho, true);
-  return `<h1>Itens de ${e(pessoa.nome)}</h1><p class="sub">O fim é opcional. Sem ele, o item continua em todo mês a partir do início. Início igual ao fim é cobrança única.</p>
-    <form class="bloco" method="post" action="/pessoas/${e(pessoa.id)}/itens">${csrf(csrfToken)}
+        ${botaoFechar()}
+      </header>
+      <label>Descrição<input name="descricao" maxlength="200" required value="${e(valores.descricao)}"></label>
+      <label>Valor (R$)<input name="valor" class="dinheiro" required placeholder="1.150,00" value="${e(valores.valor)}"></label>
       <div class="row">
-        <label>Descrição<input name="descricao" maxlength="200" required value="${e(novo.descricao)}"></label>
-        <label>Valor<input name="valor" required placeholder="1.150,00" value="${e(novo.valor)}"></label>
-        <label>Início mês<input name="inicio_mes" type="number" min="1" max="12" required value="${e(novo.inicioMes)}"></label>
-        <label>Início ano<input name="inicio_ano" type="number" min="2000" max="2100" required value="${e(novo.inicioAno)}"></label>
-        <label>Fim mês<input name="fim_mes" type="number" min="1" max="12" placeholder="opcional" value="${e(novo.fimMes)}"></label>
-        <label>Fim ano<input name="fim_ano" type="number" min="2000" max="2100" placeholder="opcional" value="${e(novo.fimAno)}"></label>
-        <button type="submit">Adicionar</button>
+        <label>Início mês<input name="inicio_mes" type="number" min="1" max="12" required value="${e(valores.inicioMes)}" placeholder="MM"></label>
+        <label>Início ano<input name="inicio_ano" type="number" min="2000" max="2100" required value="${e(valores.inicioAno)}"></label>
+        <label>Fim mês<input name="fim_mes" type="number" min="1" max="12" placeholder="opcional" value="${e(valores.fimMes)}"></label>
+        <label>Fim ano<input name="fim_ano" type="number" min="2000" max="2100" placeholder="opcional" value="${e(valores.fimAno)}"></label>
+      </div>
+      ${inicioCompetencia ? `<p class="muted pequeno">Prévia: ${e(inicioCompetencia)}${fimCompetencia ? ` até ${e(fimCompetencia)}` : ' · sem fim'}</p>` : ''}
+      <div class="acoes modal-rodape">
+        <button type="button" class="secundario modal-fechar">${rotulo('fechar', 'Cancelar')}</button>
+        <button type="submit">${rotulo('salvar', 'Salvar')}</button>
       </div>
     </form>
-    <table><thead><tr><th>Descrição</th><th>Valor</th><th>Início</th><th>Fim</th><th></th></tr></thead><tbody>${linhas}</tbody></table>`;
+  </dialog>`;
+}
+
+function modalItensCobranca(linha: LinhaHistorico, itens: LinhaResumoCobranca[]): string {
+  const id = `modal-cobranca-itens-${linha.id}`;
+  const corpo = itens.length
+    ? itens
+        .map(
+          (item) =>
+            `<tr><td>${e(item.descricao)}</td><td class="dinheiro num">${formatarReais(item.valorCentavos)}</td></tr>`,
+        )
+        .join('')
+    : '<tr><td colspan="2" class="muted">Nenhum lançamento registrado nesta cobrança.</td></tr>';
+  const status = tagStatus(linha.status);
+  return `<dialog class="modal modal-itens-cobranca" id="${e(id)}">
+    <div class="modal-corpo">
+      <header class="modal-cabeca">
+        <div>
+          <h2>Lançamentos da cobrança</h2>
+          <p class="muted pequeno">${e(linha.competencia)} · <span class="dinheiro">${formatarReais(linha.total)}</span> · ${status}</p>
+        </div>
+        ${botaoFechar()}
+      </header>
+      <table>
+        <thead><tr><th>Descrição</th><th class="num">Valor</th></tr></thead>
+        <tbody>${corpo}</tbody>
+        <tfoot><tr><td>Total</td><td class="dinheiro num">${formatarReais(linha.total)}</td></tr></tfoot>
+      </table>
+      <div class="acoes modal-rodape">
+        <a class="botao secundario" href="/cobrancas/${e(linha.id)}">${rotulo('abrir', 'Abrir cobrança')}</a>
+        <button type="button" class="secundario modal-fechar">${rotulo('fechar', 'Fechar')}</button>
+      </div>
+    </div>
+  </dialog>`;
+}
+
+function metricasFicha(pessoa: Pessoa, diaEfetivo: number, itens: Item[], historico: LinhaHistorico[]): string {
+  const totalMensal = itens.reduce((soma, item) => soma + item.valor_centavos, 0);
+  const comCobranca = historico.filter((linha) => linha.status !== 'cancelada');
+  const pagas = comCobranca.filter((linha) => linha.status === 'paga').length;
+  const liquidacao = comCobranca.length ? `${Math.round((pagas / comCobranca.length) * 100)}%` : '—';
+  const proximo = `Dia ${diaEfetivo}`;
+  return `<div class="ficha-metricas">
+    <div class="metrica"><span>Próximo vencimento</span><strong>${e(proximo)}</strong><small>${pessoa.ativa ? 'Cliente ativa' : 'Cliente inativa'}</small></div>
+    <div class="metrica"><span>Valor mensal recorrente</span><strong class="dinheiro ciano">${formatarReais(totalMensal)}</strong><small>${itens.length} lançamento${itens.length === 1 ? '' : 's'}</small></div>
+    <div class="metrica"><span>Histórico de liquidação</span><strong class="ok">${e(liquidacao)}</strong><small>${pagas} de ${comCobranca.length} cobrança${comCobranca.length === 1 ? '' : 's'}</small></div>
+  </div>`;
+}
+
+function cabecalhoFicha(dados: FichaPessoaDados): string {
+  const { pessoa, diaEfetivo, csrfToken, geracao } = dados;
+  const pendente = pessoa.dia_cobranca_pendente
+    ? ` Dia ${pessoa.dia_cobranca_pendente} vale a partir de ${String(pessoa.dia_pendente_mes).padStart(2, '0')}/${pessoa.dia_pendente_ano}.`
+    : '';
+  const statusClasse = pessoa.ativa ? 'ficha-status' : 'ficha-status inativa';
+  const statusTexto = pessoa.ativa ? 'Ativa' : 'Inativa';
+  const mesGeracao = geracao?.mes ?? '';
+  const anoGeracao = geracao?.ano ?? '';
+  return `<p class="ficha-trilha"><a href="/quem-deve">Quem deve</a><span aria-hidden="true">/</span><strong>${e(pessoa.nome)}</strong></p>
+    <div class="ficha-cabeca">
+      <div class="ficha-identidade">
+        <div class="ficha-avatar" aria-hidden="true">${e(monograma(pessoa.nome))}</div>
+        <div>
+          <h1>${e(pessoa.nome)}</h1>
+          <p class="sub"><span class="${statusClasse}"><i></i>${statusTexto}</span><span class="muted">Dia efetivo deste mês: ${diaEfetivo}.${pendente}</span></p>
+        </div>
+      </div>
+      <div class="ficha-acoes-topo">
+        <form class="ficha-gerar" method="post" action="/pessoas/${e(pessoa.id)}/gerar">
+          ${csrf(csrfToken)}
+          <label>Mês<input name="mes" type="number" min="1" max="12" required value="${e(mesGeracao)}"></label>
+          <label>Ano<input name="ano" type="number" min="2000" max="2100" required value="${e(anoGeracao)}"></label>
+          <button type="submit">${rotulo('gerar', 'Gerar cobrança')}</button>
+        </form>
+        <form method="post" action="/pessoas/${e(pessoa.id)}/ativa">${csrf(csrfToken)}<input type="hidden" name="ativa" value="${pessoa.ativa ? '0' : '1'}"><button class="secundario" type="submit">${pessoa.ativa ? rotulo('inativar', 'Inativar') : rotulo('reativar', 'Reativar')}</button></form>
+      </div>
+    </div>`;
+}
+
+function abaInformacoesFicha(dados: FichaPessoaDados): string {
+  const rascunho = dados.rascunhoPessoa ?? null;
+  const pessoa = dados.pessoa;
+  const nome = rascunho?.nome ?? pessoa.nome;
+  const whatsapp = rascunho?.whatsapp ?? pessoa.whatsapp;
+  const email = rascunho?.email ?? pessoa.email;
+  const cpf = rascunho?.cpf ?? pessoa.cpf ?? '';
+  const dia = rascunho ? rascunho.diaCobranca : String(pessoa.dia_cobranca_pendente ?? pessoa.dia_cobranca);
+  const validade = rascunho ? rascunho.validadePixDias : String(pessoa.validade_pix_dias);
+  const avisoDias = rascunho ? rascunho.diasAviso : String(pessoa.dias_aviso_inadimplencia);
+  const emailLigado = rascunho ? rascunho.canalEmail : pessoa.canal_email;
+  const whatsappLigado = rascunho ? rascunho.canalWhatsapp : pessoa.canal_whatsapp;
+  return `<form class="bloco" method="post" action="/pessoas/${e(pessoa.id)}">
+      ${csrf(dados.csrfToken)}
+      <div class="bloco-cabeca"><div><h2>Dados cadastrais</h2><p class="muted">Contato e regras de cobrança PIX desta pessoa.</p></div></div>
+      <div class="ficha-form-grid">
+        <label>Nome<input name="nome" required maxlength="120" value="${e(nome)}"></label>
+        <label>WhatsApp<input name="whatsapp" required value="${e(whatsapp)}" placeholder="11999999999"></label>
+        <label>E-mail<input name="email" type="email" required value="${e(email)}"></label>
+        <label>CPF<input name="cpf" value="${e(cpf)}" placeholder="opcional"></label>
+        <label>Dia de cobrança<input name="dia_cobranca" type="number" min="1" max="31" required value="${e(dia)}"></label>
+        <label>Validade do PIX (dias)<input name="validade_pix_dias" type="number" min="1" max="30" required value="${e(validade)}"></label>
+        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}"></label>
+        <div class="checks linha-inteira">
+          <label><input type="checkbox" name="canal_email" value="1" ${emailLigado ? 'checked' : ''}> E-mail</label>
+          <label><input type="checkbox" name="canal_whatsapp" value="1" ${whatsappLigado ? 'checked' : ''}> WhatsApp</label>
+        </div>
+      </div>
+      <div class="acoes"><button type="submit">${rotulo('salvar', 'Salvar alterações')}</button></div>
+    </form>`;
+}
+
+function abaLancamentosFicha(dados: FichaPessoaDados): string {
+  const { pessoa, itens, itensUsados, csrfToken, rascunhoItem } = dados;
+  const linhas = itens
+    .map((item) => {
+      const idModal = `modal-lancamento-${item.id}`;
+      const podeExcluir = !itensUsados.has(item.id);
+      return `<tr>
+        <td>${e(item.descricao)}</td>
+        <td class="dinheiro num">${formatarReais(item.valor_centavos)}</td>
+        <td>${String(item.inicio_mes).padStart(2, '0')}/${item.inicio_ano}</td>
+        <td>${fimExibido(item.fim_mes, item.fim_ano)}</td>
+        <td><div class="acoes-celula">
+          <button type="button" class="secundario compacto" data-modal-abrir="${e(idModal)}">${rotulo('editar', 'Editar')}</button>
+          ${podeExcluir
+            ? `<form method="post" action="/itens/${e(item.id)}/excluir">${csrf(csrfToken)}<button class="secundario compacto perigo" type="submit">${rotulo('excluir', 'Excluir')}</button></form>`
+            : '<span class="muted pequeno">em cobrança</span>'}
+        </div></td>
+      </tr>`;
+    })
+    .join('');
+  const total = itens.reduce((soma, item) => soma + item.valor_centavos, 0);
+  const modaisEdit = itens
+    .map((item) => {
+      const valores = valoresItem(item, rascunhoItem, false);
+      const inicial = rascunhoItem?.id === item.id;
+      return modalLancamento(pessoa.id, csrfToken, valores, {
+        idModal: `modal-lancamento-${item.id}`,
+        titulo: 'Editar lançamento',
+        action: `/itens/${item.id}`,
+        inicial,
+      });
+    })
+    .join('');
+  const novo = valoresItem(null, rascunhoItem, true);
+  const modalNovo = modalLancamento(pessoa.id, csrfToken, novo, {
+    idModal: 'modal-lancamento-novo',
+    titulo: 'Novo lançamento',
+    action: `/pessoas/${pessoa.id}/itens`,
+    inicial: rascunhoItem?.id === null,
+  });
+  return `<div class="bloco ficha-tabela">
+      <div class="bloco-cabeca">
+        <div><h2>Lançamentos recorrentes</h2><p class="muted">Itens que entram no valor consolidado da cobrança mensal.</p></div>
+        <button type="button" class="botao" data-modal-abrir="modal-lancamento-novo">${rotulo('mais', 'Novo lançamento')}</button>
+      </div>
+      <table>
+        <thead><tr><th>Descrição</th><th class="num">Valor</th><th>Início</th><th>Fim</th><th class="num">Ações</th></tr></thead>
+        <tbody>${linhas || '<tr><td colspan="5" class="muted">Nenhum lançamento cadastrado.</td></tr>'}</tbody>
+        ${itens.length ? `<tfoot><tr><td>Total mensal</td><td class="dinheiro num">${formatarReais(total)}</td><td colspan="3"></td></tr></tfoot>` : ''}
+      </table>
+    </div>
+    ${modalNovo}${modaisEdit}`;
+}
+
+function abaHistoricoFicha(dados: FichaPessoaDados): string {
+  const { historico, linhasCobranca } = dados;
+  const linhas = historico
+    .map((linha) => {
+      const ver = `<button type="button" class="secundario compacto" data-modal-abrir="modal-cobranca-itens-${e(linha.id)}">${rotulo('lista', 'Ver lançamentos')}</button>`;
+      return `<tr>
+        <td class="dinheiro num">${formatarReais(linha.total)}</td>
+        <td>${e(linha.competencia)}</td>
+        <td>${tagStatus(linha.status)}</td>
+        <td>${linha.pagaEm ? e(linha.pagaEm) : '—'}</td>
+        <td>${ver}</td>
+      </tr>`;
+    })
+    .join('');
+  const modais = historico.map((linha) => modalItensCobranca(linha, linhasCobranca[linha.id] ?? [])).join('');
+  return `<div class="bloco ficha-tabela">
+      <div class="bloco-cabeca"><div><h2>Cobranças geradas</h2><p class="muted">Histórico de faturas e liquidações desta pessoa.</p></div></div>
+      <table>
+        <thead><tr><th class="num">Valor</th><th>Competência</th><th>Status</th><th>Pago em</th><th>Ações</th></tr></thead>
+        <tbody>${linhas || '<tr><td colspan="5" class="muted">Nenhuma cobrança gerada ainda.</td></tr>'}</tbody>
+      </table>
+    </div>
+    ${modais}`;
+}
+
+export function paginaFichaPessoa(dados: FichaPessoaDados): string {
+  const href = `/pessoas/${dados.pessoa.id}`;
+  const abas = `${abaFicha(href, 'informacoes', dados.aba, 'Informações')}${abaFicha(href, 'lancamentos', dados.aba, 'Lançamentos', dados.itens.length)}${abaFicha(href, 'historico', dados.aba, 'Histórico', dados.historico.length)}`;
+  let painel = '';
+  if (dados.aba === 'informacoes') painel = abaInformacoesFicha(dados);
+  else if (dados.aba === 'lancamentos') painel = abaLancamentosFicha(dados);
+  else painel = abaHistoricoFicha(dados);
+  return `${cabecalhoFicha(dados)}
+    ${metricasFicha(dados.pessoa, dados.diaEfetivo, dados.itens, dados.historico)}
+    <div class="ficha-abas" role="tablist">${abas}</div>
+    <div class="ficha-painel">${painel}</div>`;
+}
+
+export function paginaPessoa(
+  pessoa: Pessoa | null,
+  efetivo: number | null,
+  csrfToken: string,
+  _itensHref: string | null,
+  rascunho: RascunhoPessoa | null = null,
+  _geracao: RascunhoMes | null = null,
+): string {
+  const nome = rascunho?.nome ?? '';
+  const whatsapp = rascunho?.whatsapp ?? '';
+  const email = rascunho?.email ?? '';
+  const cpf = rascunho?.cpf ?? '';
+  const dia = rascunho?.diaCobranca ?? '10';
+  const validade = rascunho?.validadePixDias ?? '10';
+  const avisoDias = rascunho?.diasAviso ?? '5';
+  const emailLigado = rascunho ? rascunho.canalEmail : true;
+  const whatsappLigado = rascunho ? rascunho.canalWhatsapp : true;
+  return `<h1>Nova pessoa</h1>
+    <p class="sub">E-mail e WhatsApp começam ligados. O PIX vale 10 dias e o aviso sai 5 dias depois do vencimento.</p>
+    <form class="bloco" method="post" action="/pessoas">
+      ${csrf(csrfToken)}
+      <div class="ficha-form-grid">
+        <label>Nome<input name="nome" required maxlength="120" value="${e(nome)}"></label>
+        <label>WhatsApp<input name="whatsapp" required value="${e(whatsapp)}" placeholder="11999999999"></label>
+        <label>E-mail<input name="email" type="email" required value="${e(email)}"></label>
+        <label>CPF<input name="cpf" value="${e(cpf)}" placeholder="opcional"></label>
+        <label>Dia de cobrança<input name="dia_cobranca" type="number" min="1" max="31" required value="${e(dia)}"></label>
+        <label>Validade do PIX (dias)<input name="validade_pix_dias" type="number" min="1" max="30" required value="${e(validade)}"></label>
+        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}"></label>
+        <div class="checks linha-inteira">
+          <label><input type="checkbox" name="canal_email" value="1" ${emailLigado ? 'checked' : ''}> E-mail</label>
+          <label><input type="checkbox" name="canal_whatsapp" value="1" ${whatsappLigado ? 'checked' : ''}> WhatsApp</label>
+        </div>
+      </div>
+      <div class="acoes"><button type="submit">${rotulo('salvar', 'Salvar')}</button></div>
+    </form>`;
 }
 
 export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], csrfToken: string, filtro: { pessoa?: string; status?: string; mes?: string; ano?: string }): string {
@@ -1052,7 +1410,7 @@ export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], csr
       <td>${indicador('E-mail', linha.email)}${indicador('WhatsApp', linha.whatsapp)}</td>
       <td>${acoesDaCobranca(linha.id, csrfToken, { copia: linha.copiaPix, email: linha.podeEmail, whatsapp: linha.podeWhatsapp })}</td>
     </tr>`).join('');
-  return `<h1>Histórico de cobranças</h1><p class="sub">As canceladas ficam de fora até você filtrar por elas.</p>
+  return `<h1>Cobranças</h1><p class="sub">As canceladas ficam de fora até você filtrar por elas.</p>
     <form class="bloco" method="get" action="/cobrancas">
       <div class="row">
         <label>Pessoa<select name="pessoa"><option value="">Todas</option>${opcoes}</select></label>
@@ -1065,7 +1423,7 @@ export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], csr
         </select></label>
         <label>Mês<input name="mes" value="${e(filtro.mes ?? '')}"></label>
         <label>Ano<input name="ano" value="${e(filtro.ano ?? '')}"></label>
-        <button type="submit">Filtrar</button>
+        <button type="submit">${rotulo('filtro', 'Filtrar')}</button>
       </div>
     </form>
     <table><thead><tr><th>Pessoa</th><th>Competência</th><th>Status</th><th>Embutida em</th><th>Total</th><th>Origem</th><th>Cobrança</th><th></th></tr></thead>
@@ -1086,7 +1444,7 @@ export function paginaDetalhe(detalhe: Detalhe, csrfToken: string, motivo = ''):
     </tr>`).join('');
   const eventos = detalhe.eventos.map((evento) => `<li>${e(evento.efeito)} · ${formatarReais(evento.valorCentavos)} · ${e(formatarDataHora(evento.recebidoEm))}</li>`).join('');
   const afetadas = detalhe.linhasAfetadas.map((linha) => `${linha.descricao} (${String(linha.mes).padStart(2, '0')}/${linha.ano})`).join(', ');
-  return `<p class="trilha"><a href="/cobrancas">Histórico</a> / ${e(detalhe.pessoa)}</p>
+  return `<p class="trilha"><a href="/cobrancas">Cobranças</a> / ${e(detalhe.pessoa)}</p>
     <div class="topo"><div><h1>${e(detalhe.pessoa)} · ${e(detalhe.competencia)}</h1>
     <p class="sub"><a href="/pessoas/${e(detalhe.pessoaId)}">${e(detalhe.pessoa)}</a> · ${tagStatus(detalhe.status)} · ${e(detalhe.origem)}${detalhe.pagaEm ? ` · paga em ${e(formatarDataHora(detalhe.pagaEm))} (${e(detalhe.origemBaixa)})` : ''}</p></div>
     <p class="dinheiro">Total ${formatarReais(detalhe.total)}</p></div>
@@ -1117,12 +1475,12 @@ function modalPreviaTemplate(previsao: { canal: string; tipo: string; assunto: s
     <div class="modal-corpo">
       <header class="modal-cabeca">
         <h2>Pré-visualização</h2>
-        <button type="button" class="secundario modal-fechar modal-fechar-x" aria-label="Fechar">×</button>
+        ${botaoFechar()}
       </header>
       <p class="muted">${e(titulo)}. Dados fictícios, de ninguém cadastrado. O texto não foi salvo.</p>
       ${previsao.assunto ? `<p class="mensagem-assunto"><span class="muted">Assunto</span><br><strong>${e(previsao.assunto)}</strong></p>` : ''}
       <pre class="mensagem-previa">${e(previsao.corpo)}</pre>
-      <div class="acoes modal-rodape"><button type="button" class="secundario modal-fechar">Fechar</button></div>
+      <div class="acoes modal-rodape"><button type="button" class="secundario modal-fechar">${rotulo('fechar', 'Fechar')}</button></div>
     </div>
   </dialog>`;
 }
@@ -1147,9 +1505,9 @@ export function paginaTemplates(
         ${modelo.canal === 'email' ? `<label>Assunto<input name="assunto" value="${e(assunto)}"></label>` : ''}
         <label>Texto<textarea name="corpo">${e(corpo)}</textarea></label>
         <div class="acoes">
-          <button type="submit">Salvar</button>
-          <button class="secundario" type="submit" formaction="${caminho}/prever">Pré-visualizar</button>
-          <button class="secundario" type="submit" formaction="${caminho}/restaurar">Restaurar padrão</button>
+          <button type="submit">${rotulo('salvar', 'Salvar')}</button>
+          <button class="secundario" type="submit" formaction="${caminho}/prever">${rotulo('olho', 'Pré-visualizar')}</button>
+          <button class="secundario" type="submit" formaction="${caminho}/restaurar">${rotulo('restaurar', 'Restaurar padrão')}</button>
         </div>
       </form>
     </section>`;
@@ -1171,6 +1529,7 @@ export function paginaConfiguracao(
         ...config,
         usuario: rascunho.usuario,
         emailDono: rascunho.emailDono,
+        telefone2fa: rascunho.telefone2fa,
         smtpHost: rascunho.smtpHost,
         smtpPorta: rascunho.smtpPorta,
         smtpUsuario: rascunho.smtpUsuario,
@@ -1208,6 +1567,7 @@ export function paginaConfiguracao(
       <div class="row">
         <label${inv('usuario')}>Usuário<input name="usuario" required value="${e(config.usuario)}"></label>
         <label${inv('email_dono')}>E-mail do código<input name="email_dono" type="email" required value="${e(config.emailDono)}"></label>
+        <label${inv('telefone_2fa')}>Telefone para 2FA<input name="telefone_2fa" value="${e(config.telefone2fa)}" placeholder="11999999999" autocomplete="off"></label>
         <label${inv('senha_atual')}>Senha atual<input name="senha_atual" type="password" autocomplete="current-password"></label>
         <label${inv('senha_nova')}>Senha nova<input name="senha_nova" type="password" autocomplete="new-password"></label>
       </div>
@@ -1253,7 +1613,7 @@ export function paginaConfiguracao(
         <label>E-mail de teste<input name="email_teste" type="email" placeholder="${e(config.emailDono)}" autocomplete="off"></label>
       </div>
       <div class="acoes">
-        <button class="secundario" type="submit" formaction="/configuracao/smtp" formmethod="post">Enviar e-mail teste</button>
+        <button class="secundario" type="submit" formaction="/configuracao/smtp" formmethod="post">${rotulo('mail', 'Enviar e-mail teste')}</button>
       </div>
       <h2>Evolution Go</h2>
       <p>Chave API: ${config.evolution.chaveDefinida ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}. ${e(teste)}</p>
@@ -1264,8 +1624,8 @@ export function paginaConfiguracao(
       </div>
       <p class="muted">O teste usa o Evolution já salvo. Salve antes se alterou URL, instância ou chave.</p>
       <div class="acoes">
-        <button class="secundario" type="submit" formaction="/configuracao/evolution" formmethod="post">Testar conexão</button>
-        <button type="submit">Salvar</button>
+        <button class="secundario" type="submit" formaction="/configuracao/evolution" formmethod="post">${rotulo('plug', 'Testar conexão')}</button>
+        <button type="submit">${rotulo('salvar', 'Salvar')}</button>
       </div>
     </form>`;
 }

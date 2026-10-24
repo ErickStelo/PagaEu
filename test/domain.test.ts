@@ -23,6 +23,7 @@ import { lerPagamentoPixRecebido } from '../src/mercadopago.ts';
 import { hostRemotoPermitido, urlHttpRemotaPermitida } from '../src/domain/url.ts';
 import { formatarCentavos, formatarReais, interpretarReais } from '../src/domain/money.ts';
 import { intervaloConciliacaoValido } from '../src/configuracao.ts';
+import { lerEnv, segundoFatorAtivo } from '../src/env.ts';
 import { CORPO_COBRANCA, DADOS_FICTICIOS, preencherTemplate, validarTemplate } from '../src/domain/template.ts';
 import { corpoOrdem } from '../src/mercadopago.ts';
 
@@ -328,6 +329,15 @@ test('intervalos de conciliação automática', () => {
   assert.equal(intervaloConciliacaoValido(60), true);
   assert.equal(intervaloConciliacaoValido(0), true);
   assert.equal(intervaloConciliacaoValido(5), false);
+});
+
+test('segundo fator liga só com PAGAEU_2FA_ENABLED', () => {
+  const base = { DATABASE_URL: 'postgres://x' };
+  assert.equal(segundoFatorAtivo(lerEnv(base)), false);
+  assert.equal(segundoFatorAtivo(lerEnv({ ...base, PAGAEU_2FA_ENABLED: 'true' })), true);
+  assert.equal(segundoFatorAtivo(lerEnv({ ...base, PAGAEU_2FA_ENABLED: 'false' })), false);
+  assert.equal(segundoFatorAtivo(lerEnv({ ...base, PAGAEU_2FA_ENABLED: '1' })), true);
+  assert.equal(segundoFatorAtivo(lerEnv({ ...base, PAGAEU_2FA_ENABLED: 'sim' })), true);
 });
 
 test('documento, template e assinatura do webhook', () => {

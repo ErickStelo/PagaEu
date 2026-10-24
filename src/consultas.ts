@@ -174,6 +174,7 @@ export type LinhaHistorico = {
   pessoaId: string;
   competencia: string;
   status: StatusCobranca;
+  pagaEm: string | null;
   embutidaEm: string | null;
   total: number;
   origem: string;
@@ -183,6 +184,30 @@ export type LinhaHistorico = {
   podeEmail: boolean;
   podeWhatsapp: boolean;
 };
+
+export type LinhaResumoCobranca = {
+  descricao: string;
+  valorCentavos: number;
+};
+
+export async function listarLinhasDasCobrancas(app: App, cobrancaIds: string[]): Promise<Map<string, LinhaResumoCobranca[]>> {
+  if (!cobrancaIds.length) return new Map();
+  const linhas = await consultar<{ cobranca_id: string; descricao: string; valor_centavos: number }>(
+    app.pool,
+    `SELECT cobranca_id, descricao, valor_centavos
+     FROM linha_cobranca
+     WHERE cobranca_id = ANY($1::uuid[])
+     ORDER BY competencia_origem_ano, competencia_origem_mes, descricao, id`,
+    [cobrancaIds],
+  );
+  const mapa = new Map<string, LinhaResumoCobranca[]>();
+  for (const linha of linhas) {
+    const lista = mapa.get(linha.cobranca_id) ?? [];
+    lista.push({ descricao: linha.descricao, valorCentavos: linha.valor_centavos });
+    mapa.set(linha.cobranca_id, lista);
+  }
+  return mapa;
+}
 
 export async function listarHistorico(
   app: App,
@@ -212,6 +237,7 @@ export async function listarHistorico(
     competencia_mes: number;
     status: StatusCobranca;
     origem_geracao: string;
+    paga_em: Date | null;
     canal_email_selecionado: boolean;
     canal_whatsapp_selecionado: boolean;
     copia_e_cola: string | null;
@@ -220,7 +246,7 @@ export async function listarHistorico(
     embutida_mes: number | null;
   }>(
     app.pool,
-    `SELECT c.id, c.pessoa_id, p.nome, c.competencia_ano, c.competencia_mes, c.status, c.origem_geracao,
+    `SELECT c.id, c.pessoa_id, p.nome, c.competencia_ano, c.competencia_mes, c.status, c.origem_geracao, c.paga_em,
             c.canal_email_selecionado, c.canal_whatsapp_selecionado,
             COALESCE((SELECT SUM(valor_centavos) FROM linha_cobranca l WHERE l.cobranca_id = c.id), 0)::int AS total,
             emb.competencia_ano AS embutida_ano, emb.competencia_mes AS embutida_mes,
@@ -268,6 +294,12 @@ export async function listarHistorico(
       pessoaId: linha.pessoa_id,
       competencia: formatarCompetencia(linha.competencia_ano, linha.competencia_mes),
       status: linha.status,
+      pagaEm: linha.paga_em
+        ? (() => {
+            const partes = partesNoFuso(linha.paga_em!);
+            return `${String(partes.day).padStart(2, '0')}/${String(partes.month).padStart(2, '0')}/${partes.year}`;
+          })()
+        : null,
       embutidaEm: linha.embutida_ano && linha.embutida_mes ? formatarCompetencia(linha.embutida_ano, linha.embutida_mes) : null,
       total: linha.total,
       origem: origemNome[linha.origem_geracao] ?? linha.origem_geracao,

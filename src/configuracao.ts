@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { App } from './app.ts';
 import { consultar, type Consultavel } from './db.ts';
-import { emailValido } from './domain/documento.ts';
+import { emailValido, normalizarWhatsapp } from './domain/documento.ts';
 import { urlHttpRemotaPermitida } from './domain/url.ts';
 import {
   DADOS_FICTICIOS,
@@ -21,6 +21,7 @@ type LinhaConfig = {
   usuario_painel: string;
   senha_painel_hash: string;
   email_dono: string;
+  telefone_2fa: string | null;
   mp_access_token: string | null;
   mp_webhook_secret: string | null;
   smtp_host: string | null;
@@ -76,6 +77,7 @@ const LIMITE_CIDADE_PIX = 15;
 export type ConfigPublica = {
   usuario: string;
   emailDono: string;
+  telefone2fa: string;
   mpAccessTokenDefinido: boolean;
   mpWebhookSecretDefinido: boolean;
   smtpHost: string;
@@ -204,6 +206,7 @@ export async function lerConfigPublica(app: App): Promise<ConfigPublica> {
   return {
     usuario: atual.usuario_painel,
     emailDono: atual.email_dono,
+    telefone2fa: atual.telefone_2fa ?? '',
     mpAccessTokenDefinido: Boolean(atual.mp_access_token),
     mpWebhookSecretDefinido: Boolean(atual.mp_webhook_secret),
     smtpHost: atual.smtp_host ?? '',
@@ -231,6 +234,7 @@ export async function lerConfigPublica(app: App): Promise<ConfigPublica> {
 export type EntradaConfig = {
   usuario: string;
   emailDono: string;
+  telefone2fa: string;
   senhaAtual: string;
   senhaNova: string;
   mpAccessToken: string;
@@ -270,8 +274,14 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
   const atual = await linha(app.pool);
   const usuario = entrada.usuario.trim();
   const email = entrada.emailDono.trim();
+  const telefoneBruto = entrada.telefone2fa.trim();
   if (usuario.length < 1 || usuario.length > 80) return { ok: false, aviso: 'Informe o usuário do painel.', campo: 'usuario' };
   if (!emailValido(email)) return { ok: false, aviso: 'E-mail do dono inválido.', campo: 'email_dono' };
+  let telefone2fa: string | null = null;
+  if (telefoneBruto) {
+    telefone2fa = normalizarWhatsapp(telefoneBruto);
+    if (!telefone2fa) return { ok: false, aviso: 'Telefone para 2FA inválido. Use DDI e DDD, ou um número brasileiro.', campo: 'telefone_2fa' };
+  }
   const trocaSenha = entrada.senhaNova.trim().length > 0;
   if (trocaSenha && !entrada.senhaAtual.trim()) {
     return { ok: false, aviso: 'Informe a senha atual para definir uma senha nova.', campo: 'senha_atual' };
@@ -340,7 +350,8 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
       pix_chave = $18,
       pix_recebedor = $19,
       pix_cidade = $20,
-      conciliacao_intervalo_minutos = $21
+      conciliacao_intervalo_minutos = $21,
+      telefone_2fa = $22
      WHERE id = 1`,
     [
       usuario,
@@ -364,6 +375,7 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
       pix.recebedor,
       pix.cidade,
       conciliacaoMinutos,
+      telefone2fa,
     ],
   );
   return { ok: true };

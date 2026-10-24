@@ -51,7 +51,7 @@ Os nomes são os do `.env.example`. Nenhum valor secreto vem no repositório.
 | `PAGAEU_ADMIN_USER` | Usuário do painel na primeira subida. |
 | `PAGAEU_ADMIN_PASSWORD` | Senha do painel na primeira subida. |
 | `PAGAEU_ADMIN_EMAIL` | E-mail que recebe o código de acesso na primeira subida. |
-| `PAGAEU_LOGIN_CODE_DISABLED` | `1`, `true` ou `sim` entram só com usuário e senha. Qualquer outro valor pede o código de 6 dígitos. |
+| `PAGAEU_2FA_ENABLED` | `1`, `true` ou `sim` pedem o código de 6 dígitos depois da senha (WhatsApp se houver telefone, senão e-mail). Qualquer outro valor entra só com usuário e senha. |
 | `EVOLUTION_GO_URL` | Opcional. Se o painel ainda não tem Evolution gravado, a primeira subida importa URL, instância e chave a partir destas três variáveis. |
 | `EVOLUTION_GO_API_KEY` | Opcional. Chave global usada para listar instâncias no Evolution Go. |
 | `EVOLUTION_GO_INSTANCE` | Opcional. Nome da instância já existente no Evolution Go. |
@@ -64,7 +64,7 @@ O login limita tentativas falhas por IP (bloqueio temporário após várias falh
 
 Se ainda não existe a linha de configuração, a aplicação grava usuário, senha e e-mail a partir de `PAGAEU_ADMIN_USER`, `PAGAEU_ADMIN_PASSWORD` e `PAGAEU_ADMIN_EMAIL`. Os três precisam estar preenchidos nessa primeira partida. Uma subida seguinte não troca essa senha.
 
-Na primeira partida o SMTP ainda não está gravado. Com o código de acesso ligado, esse e-mail não sai e o login não abre. Para entrar, use `PAGAEU_LOGIN_CODE_DISABLED`. Depois de gravar o SMTP, desligar a variável volta a exigir o código. O código vale 10 minutos e um uso. A sessão cai depois de mais de 12 horas sem uso.
+Na primeira partida o SMTP ainda não está gravado. Com o 2FA ligado e sem telefone, esse e-mail não sai e o login não abre. Para entrar, deixe `PAGAEU_2FA_ENABLED` desligado. Depois de gravar o SMTP ou o telefone de 2FA, ligue a variável para exigir o código. O código vale 10 minutos e um uso. A sessão cai depois de mais de 12 horas sem uso.
 
 ## Porta
 

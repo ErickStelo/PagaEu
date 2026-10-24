@@ -12,10 +12,11 @@ import {
   lerSessao,
   pegarFlash,
   reenviarCodigo,
+  type CanalCodigo,
   type Flash,
   type Sessao,
 } from './acesso.ts';
-import { detalharCobranca, listarHistorico, montarPainel } from './consultas.ts';
+import { detalharCobranca, listarHistorico, listarLinhasDasCobrancas, montarPainel } from './consultas.ts';
 import { montarDashboard } from './dashboard.ts';
 import { normalizarPeriodo, type Competencia, type Periodo } from './domain/painel.ts';
 import {
@@ -71,13 +72,15 @@ import {
   paginaConfiguracao,
   paginaDetalhe,
   paginaHistorico,
-  paginaItens,
   paginaLogin,
   paginaPessoa,
+  paginaFichaPessoa,
   modalResultadoConsultaPagamentos,
   paginaDashboard,
   paginaQuemDeve,
   paginaTemplates,
+  type AbaFicha,
+  type FichaPessoaDados,
   type RascunhoItem,
 } from './paginas.ts';
 import { receberWebhook } from './webhook.ts';
@@ -163,12 +166,22 @@ function cookieSeguro(ctx: Ctx): boolean {
   return false;
 }
 
+function canalCodigo(valor: string | undefined): CanalCodigo {
+  return valor === 'whatsapp' ? 'whatsapp' : 'email';
+}
+
 function recusarLimiteLogin(ctx: Ctx, etapaCodigo: boolean, valor = ''): void {
   if (pedidoAjax(ctx)) {
     json(ctx, 429, { ok: false, aviso: AVISO_LIMITE });
     return;
   }
-  html(ctx, 429, etapaCodigo ? 'Código' : 'Entrar', paginaLogin(AVISO_LIMITE, etapaCodigo, valor), null);
+  html(
+    ctx,
+    429,
+    etapaCodigo ? 'Código' : 'Entrar',
+    paginaLogin(AVISO_LIMITE, etapaCodigo, valor, canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'))),
+    null,
+  );
 }
 
 function definirCookie(ctx: Ctx, nome: string, valor: string, maxAge: number): void {
@@ -373,7 +386,8 @@ rota('POST', '/webhooks/mercadopago', async (ctx) => {
 rota('GET', '/login', async (ctx) => {
   if (ctx.sessao) return redirecionar(ctx, '/');
   const codigo = lerCookies(ctx.req).get('pagaeu_codigo');
-  html(ctx, 200, 'Entrar', paginaLogin(null, Boolean(codigo)), null);
+  const canal = canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'));
+  html(ctx, 200, codigo ? 'Código' : 'Entrar', paginaLogin(null, Boolean(codigo), '', canal), null);
 });
 
 rota('POST', '/login', async (ctx) => {
@@ -390,12 +404,14 @@ rota('POST', '/login', async (ctx) => {
   if ('sessaoId' in resultado) {
     registrarSucesso(chave);
     limparCookie(ctx, 'pagaeu_codigo');
+    limparCookie(ctx, 'pagaeu_codigo_canal');
     definirCookie(ctx, 'pagaeu_sessao', resultado.sessaoId, 12 * 60 * 60);
     ctx.sessao = await lerSessao(ctx.app, resultado.sessaoId);
     return redirecionar(ctx, '/');
   }
   definirCookie(ctx, 'pagaeu_codigo', resultado.codigoId, 30 * 60);
-  html(ctx, 200, 'Código', paginaLogin(null, true), null);
+  definirCookie(ctx, 'pagaeu_codigo_canal', resultado.canal, 30 * 60);
+  html(ctx, 200, 'Código', paginaLogin(null, true, '', resultado.canal), null);
 });
 
 rota('POST', '/login/codigo', async (ctx) => {
@@ -412,11 +428,18 @@ rota('POST', '/login/codigo', async (ctx) => {
   if (!resultado.ok) {
     registrarFalha(chave, agoraMs);
     if (pedidoAjax(ctx)) return json(ctx, 401, { ok: false, aviso: resultado.aviso });
-    return html(ctx, 401, 'Código', paginaLogin(resultado.aviso, true, ctx.form.get('codigo') ?? ''), null);
+    return html(
+      ctx,
+      401,
+      'Código',
+      paginaLogin(resultado.aviso, true, ctx.form.get('codigo') ?? '', canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'))),
+      null,
+    );
   }
   registrarSucesso(chave);
   registrarSucesso(`senha:${ipDoPedido(ctx.req)}`);
   limparCookie(ctx, 'pagaeu_codigo');
+  limparCookie(ctx, 'pagaeu_codigo_canal');
   definirCookie(ctx, 'pagaeu_sessao', resultado.sessaoId, 12 * 60 * 60);
   ctx.sessao = await lerSessao(ctx.app, resultado.sessaoId);
   redirecionar(ctx, '/');
@@ -427,7 +450,7 @@ rota('POST', '/login/reenviar', async (ctx) => {
   const ip = ipDoPedido(ctx.req);
   if (!podeReenviarCodigo(ip, agoraMs)) {
     if (pedidoAjax(ctx)) return json(ctx, 429, { ok: false, aviso: AVISO_LIMITE });
-    return html(ctx, 429, 'Código', paginaLogin(AVISO_LIMITE, true), null);
+    return html(ctx, 429, 'Código', paginaLogin(AVISO_LIMITE, true, '', canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'))), null);
   }
   const codigoId = lerCookies(ctx.req).get('pagaeu_codigo');
   if (!codigoId) {
@@ -437,11 +460,18 @@ rota('POST', '/login/reenviar', async (ctx) => {
   const resultado = await reenviarCodigo(ctx.app, codigoId);
   if (!resultado.ok) {
     if (pedidoAjax(ctx)) return json(ctx, 422, { ok: false, aviso: resultado.aviso });
-    return html(ctx, 200, 'Código', paginaLogin(resultado.aviso, true), null);
+    return html(
+      ctx,
+      200,
+      'Código',
+      paginaLogin(resultado.aviso, true, '', canalCodigo(lerCookies(ctx.req).get('pagaeu_codigo_canal'))),
+      null,
+    );
   }
   registrarReenvioCodigo(ip, agoraMs);
   definirCookie(ctx, 'pagaeu_codigo', resultado.codigoId, 30 * 60);
-  html(ctx, 200, 'Código', paginaLogin(null, true), { tipo: 'ok', texto: 'Enviamos outro código.' });
+  definirCookie(ctx, 'pagaeu_codigo_canal', resultado.canal, 30 * 60);
+  html(ctx, 200, 'Código', paginaLogin(null, true, '', resultado.canal), { tipo: 'ok', texto: 'Enviamos outro código.' });
 });
 
 rota('POST', '/sair', async (ctx) => {
@@ -514,14 +544,11 @@ rota('GET', '/pessoas/:id', async (ctx) => {
   if (!UUID.test(ctx.params.id ?? '')) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
   const pessoa = await obterPessoa(ctx.app, ctx.params.id ?? '');
   if (!pessoa) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
-  const hoje = partesNoFuso(ctx.app.clock());
-  html(
-    ctx,
-    200,
-    pessoa.nome,
-    paginaPessoa(pessoa, diaEfetivo(pessoa.dia_cobranca, hoje.year, hoje.month), ctx.sessao.csrf, `/pessoas/${pessoa.id}/itens`),
-    await pegarFlash(ctx.app, ctx.sessao.id),
-  );
+  const atual = competenciaAtual(ctx);
+  const corpo = await corpoFichaPessoa(ctx, pessoa, parseAbaFicha(ctx.url.searchParams.get('aba')), {
+    geracao: { mes: String(atual.mes), ano: String(atual.ano) },
+  });
+  html(ctx, 200, pessoa.nome, corpo, await pegarFlash(ctx.app, ctx.sessao.id));
 });
 
 rota('POST', '/pessoas/:id', async (ctx) => {
@@ -529,13 +556,13 @@ rota('POST', '/pessoas/:id', async (ctx) => {
   const salva = await atualizarPessoa(ctx.app, ctx.params.id ?? '', entradaPessoa(ctx));
   if (!salva.ok) return htmlPessoa(ctx, ctx.params.id ?? '', rascunhoPessoa(ctx), null, { tipo: 'erro', texto: salva.aviso });
   const texto = ['Pessoa atualizada.', ...salva.avisos].filter(Boolean).join('\n');
-  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}`, { tipo: 'ok', texto });
+  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}?aba=informacoes`, { tipo: 'ok', texto });
 });
 
 rota('POST', '/pessoas/:id/ativa', async (ctx) => {
   if (!ctx.sessao || !csrfConfere(ctx) || !UUID.test(ctx.params.id ?? '')) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const resultado = await definirAtiva(ctx.app, ctx.params.id ?? '', ctx.form.get('ativa') === '1');
-  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}`, {
+  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}?aba=informacoes`, {
     tipo: resultado.ok ? 'ok' : 'erro',
     texto: resultado.ok ? 'Situação atualizada.' : resultado.aviso,
   });
@@ -553,19 +580,8 @@ rota('POST', '/pessoas/:id/gerar', async (ctx) => {
 
 rota('GET', '/pessoas/:id/itens', async (ctx) => {
   if (!ctx.sessao) return redirecionar(ctx, '/login');
-  const pessoa = await obterPessoa(ctx.app, ctx.params.id ?? '');
-  if (!pessoa) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
-  const itens = await listarItens(ctx.app, pessoa.id);
-  const usados = new Set<string>();
-  if (itens.length) {
-    const linhas = await consultar<{ item_id: string }>(
-      ctx.app.pool,
-      'SELECT DISTINCT item_id FROM linha_cobranca WHERE item_id = ANY($1::uuid[])',
-      [itens.map((item) => item.id)],
-    );
-    for (const linha of linhas) usados.add(linha.item_id);
-  }
-  html(ctx, 200, 'Itens', paginaItens(pessoa, itens, usados, ctx.sessao.csrf), await pegarFlash(ctx.app, ctx.sessao.id));
+  if (!UUID.test(ctx.params.id ?? '')) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
+  redirecionar(ctx, `/pessoas/${ctx.params.id}?aba=lancamentos`);
 });
 
 rota('POST', '/pessoas/:id/itens', async (ctx) => {
@@ -576,7 +592,7 @@ rota('POST', '/pessoas/:id/itens', async (ctx) => {
     if (!mostrou) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
     return;
   }
-  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}/itens`, { tipo: 'ok', texto: 'Item salvo.' });
+  await flashERedireciona(ctx, `/pessoas/${ctx.params.id}?aba=lancamentos`, { tipo: 'ok', texto: 'Item salvo.' });
 });
 
 rota('POST', '/itens/:id', async (ctx) => {
@@ -588,7 +604,7 @@ rota('POST', '/itens/:id', async (ctx) => {
     if (!mostrou) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
     return;
   }
-  await flashERedireciona(ctx, `/pessoas/${pessoaId}/itens`, { tipo: 'ok', texto: 'Item atualizado.' });
+  await flashERedireciona(ctx, `/pessoas/${pessoaId}?aba=lancamentos`, { tipo: 'ok', texto: 'Item atualizado.' });
 });
 
 rota('POST', '/itens/:id/excluir', async (ctx) => {
@@ -596,7 +612,7 @@ rota('POST', '/itens/:id/excluir', async (ctx) => {
   const dono = await consultar<{ pessoa_id: string }>(ctx.app.pool, 'SELECT pessoa_id FROM item WHERE id = $1', [ctx.params.id]);
   const pessoaId = dono[0]?.pessoa_id ?? '';
   const apagado = await excluirItem(ctx.app, ctx.params.id ?? '');
-  await flashERedireciona(ctx, pessoaId ? `/pessoas/${pessoaId}/itens` : '/', {
+  await flashERedireciona(ctx, pessoaId ? `/pessoas/${pessoaId}?aba=lancamentos` : '/', {
     tipo: apagado.ok ? 'ok' : 'erro',
     texto: apagado.ok ? 'Item excluído.' : apagado.aviso,
   });
@@ -614,7 +630,7 @@ rota('GET', '/cobrancas', async (ctx) => {
   html(
     ctx,
     200,
-    'Histórico',
+    'Cobranças',
     paginaHistorico(linhas, await listarPessoas(ctx.app), ctx.sessao.csrf, {
       pessoa: ctx.url.searchParams.get('pessoa') ?? '',
       status: ctx.url.searchParams.get('status') ?? '',
@@ -776,6 +792,7 @@ rota('POST', '/configuracao', async (ctx) => {
   const salvo = await salvarConfiguracao(ctx.app, {
     usuario: ctx.form.get('usuario') ?? '',
     emailDono: ctx.form.get('email_dono') ?? '',
+    telefone2fa: ctx.form.get('telefone_2fa') ?? '',
     senhaAtual: ctx.form.get('senha_atual') ?? '',
     senhaNova: ctx.form.get('senha_nova') ?? '',
     mpAccessToken: ctx.form.get('mp_access_token') ?? '',
@@ -856,6 +873,7 @@ function rascunhoConfig(ctx: Ctx) {
   return {
     usuario: campo(ctx, 'usuario'),
     emailDono: campo(ctx, 'email_dono'),
+    telefone2fa: campo(ctx, 'telefone_2fa'),
     smtpHost: campo(ctx, 'smtp_host'),
     smtpPorta: campo(ctx, 'smtp_porta'),
     smtpUsuario: campo(ctx, 'smtp_usuario'),
@@ -890,6 +908,54 @@ async function corpoDashboard(
   });
 }
 
+function parseAbaFicha(valor: string | null): AbaFicha {
+  if (valor === 'lancamentos' || valor === 'historico') return valor;
+  return 'informacoes';
+}
+
+async function itensUsadosEmCobranca(app: App, itens: { id: string }[]): Promise<Set<string>> {
+  const usados = new Set<string>();
+  if (!itens.length) return usados;
+  const linhas = await consultar<{ item_id: string }>(
+    app.pool,
+    'SELECT DISTINCT item_id FROM linha_cobranca WHERE item_id = ANY($1::uuid[])',
+    [itens.map((item) => item.id)],
+  );
+  for (const linha of linhas) usados.add(linha.item_id);
+  return usados;
+}
+
+async function montarDadosFicha(ctx: Ctx, pessoa: Awaited<ReturnType<typeof obterPessoa>>, aba: AbaFicha): Promise<FichaPessoaDados | null> {
+  if (!pessoa || !ctx.sessao) return null;
+  const hoje = partesNoFuso(ctx.app.clock());
+  const itens = await listarItens(ctx.app, pessoa.id);
+  const historico = await listarHistorico(ctx.app, { pessoaId: pessoa.id, status: 'todas' });
+  const linhasMapa = await listarLinhasDasCobrancas(ctx.app, historico.map((linha) => linha.id));
+  const linhasCobranca: FichaPessoaDados['linhasCobranca'] = {};
+  for (const [id, linhas] of linhasMapa.entries()) linhasCobranca[id] = linhas;
+  return {
+    aba,
+    pessoa,
+    diaEfetivo: diaEfetivo(pessoa.dia_cobranca, hoje.year, hoje.month),
+    itens,
+    itensUsados: await itensUsadosEmCobranca(ctx.app, itens),
+    historico,
+    linhasCobranca,
+    csrfToken: ctx.sessao.csrf,
+  };
+}
+
+async function corpoFichaPessoa(
+  ctx: Ctx,
+  pessoa: NonNullable<Awaited<ReturnType<typeof obterPessoa>>>,
+  aba: AbaFicha,
+  extras: Partial<Pick<FichaPessoaDados, 'rascunhoPessoa' | 'rascunhoItem' | 'geracao'>> = {},
+): Promise<string> {
+  const dados = await montarDadosFicha(ctx, pessoa, aba);
+  if (!dados) return '<h1>Pessoa não encontrada</h1>';
+  return paginaFichaPessoa({ ...dados, ...extras });
+}
+
 async function htmlPessoa(
   ctx: Ctx,
   pessoaId: string,
@@ -900,31 +966,16 @@ async function htmlPessoa(
   if (!ctx.sessao) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
   const pessoa = await obterPessoa(ctx.app, pessoaId);
   if (!pessoa) return html(ctx, 404, 'Não encontrada', '<h1>Pessoa não encontrada</h1>', null);
-  const hoje = partesNoFuso(ctx.app.clock());
-  html(
-    ctx,
-    422,
-    pessoa.nome,
-    paginaPessoa(pessoa, diaEfetivo(pessoa.dia_cobranca, hoje.year, hoje.month), ctx.sessao.csrf, `/pessoas/${pessoa.id}/itens`, rascunho, geracao),
-    flash,
-  );
+  const corpo = await corpoFichaPessoa(ctx, pessoa, 'informacoes', { rascunhoPessoa: rascunho, geracao });
+  html(ctx, 422, pessoa.nome, corpo, flash);
 }
 
 async function htmlItens(ctx: Ctx, pessoaId: string, rascunho: RascunhoItem, flash: Flash): Promise<boolean> {
   if (!ctx.sessao) return false;
   const pessoa = await obterPessoa(ctx.app, pessoaId);
   if (!pessoa) return false;
-  const itens = await listarItens(ctx.app, pessoa.id);
-  const usados = new Set<string>();
-  if (itens.length) {
-    const linhas = await consultar<{ item_id: string }>(
-      ctx.app.pool,
-      'SELECT DISTINCT item_id FROM linha_cobranca WHERE item_id = ANY($1::uuid[])',
-      [itens.map((item) => item.id)],
-    );
-    for (const linha of linhas) usados.add(linha.item_id);
-  }
-  html(ctx, 422, 'Itens', paginaItens(pessoa, itens, usados, ctx.sessao.csrf, rascunho), flash);
+  const corpo = await corpoFichaPessoa(ctx, pessoa, 'lancamentos', { rascunhoItem: rascunho });
+  html(ctx, 422, pessoa.nome, corpo, flash);
   return true;
 }
 

@@ -168,7 +168,7 @@ export function ambienteTeste(): Env {
     PAGAEU_ADMIN_PASSWORD: 'segredo-teste',
     PAGAEU_ADMIN_EMAIL: 'dono@example.com',
     PAGAEU_PUBLIC_URL: 'https://painel.example',
-    PAGAEU_LOGIN_CODE_DISABLED: 'false',
+    PAGAEU_2FA_ENABLED: 'true',
   });
 }
 
@@ -217,7 +217,7 @@ export async function limpar(): Promise<void> {
   mp.reset();
   correio.reset();
   evolution.reset();
-  atual.env.loginCodeDisabled = false;
+  atual.env.twoFactorEnabled = true;
 }
 
 export async function usarPixNativo(chave: string | null): Promise<void> {

@@ -2,6 +2,8 @@ import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import type { App } from './app.ts';
 import { carregarSmtp } from './configuracao.ts';
 import { consultar } from './db.ts';
+import { normalizarWhatsapp } from './domain/documento.ts';
+import { segundoFatorAtivo } from './env.ts';
 import { confereHash, gerarHash } from './senha.ts';
 
 const OCIOSA_MS = 12 * 60 * 60 * 1000;
@@ -18,6 +20,8 @@ export type Flash = {
   texto: string;
 };
 
+export type CanalCodigo = 'whatsapp' | 'email';
+
 type LinhaSessao = {
   id: string;
   csrf: string;
@@ -25,43 +29,41 @@ type LinhaSessao = {
   flash: string | null;
 };
 
+type ConfigLogin = {
+  usuario_painel: string;
+  senha_painel_hash: string;
+  email_dono: string;
+  telefone_2fa: string | null;
+};
+
 const AVISO_LOGIN = 'Usuário ou senha inválidos.';
+const TEXTO_WHATSAPP = (codigo: string) =>
+  `Seu código de acesso PagaEu é ${codigo}. Vale 10 minutos e só pode ser usado uma vez.`;
+const TEXTO_EMAIL = (codigo: string) =>
+  `Seu código de acesso é ${codigo}. Ele vale por 10 minutos e só pode ser usado uma vez.`;
 
 export async function entrarComSenha(
   app: App,
   usuario: string,
   senha: string,
   agora = app.clock(),
-): Promise<{ ok: true; sessaoId: string } | { ok: true; codigoId: string } | { ok: false; aviso: string }> {
-  const linhas = await consultar<{ usuario_painel: string; senha_painel_hash: string; email_dono: string }>(
+): Promise<{ ok: true; sessaoId: string } | { ok: true; codigoId: string; canal: CanalCodigo } | { ok: false; aviso: string }> {
+  const linhas = await consultar<ConfigLogin>(
     app.pool,
-    'SELECT usuario_painel, senha_painel_hash, email_dono FROM configuracao WHERE id = 1',
+    'SELECT usuario_painel, senha_painel_hash, email_dono, telefone_2fa FROM configuracao WHERE id = 1',
   );
   const config = linhas[0];
   if (!config || config.usuario_painel !== usuario || !(await confereHash(senha, config.senha_painel_hash))) {
     return { ok: false, aviso: AVISO_LOGIN };
   }
-  if (app.env.loginCodeDisabled) {
+  if (!segundoFatorAtivo(app.env)) {
     const sessaoId = await abrirSessao(app, agora);
     return { ok: true, sessaoId };
   }
-  const codigo = randomInt(0, 1_000_000).toString().padStart(6, '0');
-  const id = randomUUID();
-  await app.pool.query(`UPDATE codigo_login SET usado_em = $1 WHERE usado_em IS NULL`, [agora]);
-  await app.pool.query(
-    `INSERT INTO codigo_login (id, codigo_hash, expira_em) VALUES ($1, $2, $3)`,
-    [id, await gerarHash(codigo), new Date(agora.getTime() + CODIGO_MS)],
-  );
-  const smtp = await carregarSmtp(app.pool);
-  const envio = await app.correio.enviar(smtp, {
-    to: config.email_dono,
-    subject: 'Código de acesso do PagaEu',
-    text: `Seu código de acesso é ${codigo}. Ele vale por 10 minutos e só pode ser usado uma vez.`,
-  });
-  if (!envio.ok) {
-    return { ok: false, aviso: 'Não foi possível enviar o código por e-mail. Use a chave de emergência no servidor se o SMTP estiver fora.' };
-  }
-  return { ok: true, codigoId: id };
+  const gerado = await criarCodigo(app, agora);
+  const envio = await enviarCodigo(app, config, gerado.codigo);
+  if (!envio.ok) return envio;
+  return { ok: true, codigoId: gerado.id, canal: envio.canal };
 }
 
 export async function confirmarCodigo(
@@ -88,27 +90,57 @@ export async function reenviarCodigo(
   app: App,
   codigoId: string,
   agora = app.clock(),
-): Promise<{ ok: true; codigoId: string } | { ok: false; aviso: string }> {
+): Promise<{ ok: true; codigoId: string; canal: CanalCodigo } | { ok: false; aviso: string }> {
   const existe = await app.pool.query('SELECT 1 FROM codigo_login WHERE id = $1', [codigoId]);
   if (!existe.rowCount) return { ok: false, aviso: 'Entre novamente com usuário e senha.' };
-  const config = await consultar<{ email_dono: string }>(app.pool, 'SELECT email_dono FROM configuracao WHERE id = 1');
-  const email = config[0]?.email_dono;
-  if (!email) return { ok: false, aviso: 'E-mail do dono não configurado.' };
+  const config = await consultar<ConfigLogin>(
+    app.pool,
+    'SELECT usuario_painel, senha_painel_hash, email_dono, telefone_2fa FROM configuracao WHERE id = 1',
+  );
+  const atual = config[0];
+  if (!atual) return { ok: false, aviso: 'E-mail do dono não configurado.' };
+  const gerado = await criarCodigo(app, agora);
+  const envio = await enviarCodigo(app, atual, gerado.codigo);
+  if (!envio.ok) return { ok: false, aviso: envio.aviso.includes('WhatsApp') ? envio.aviso : 'Não foi possível reenviar o código.' };
+  return { ok: true, codigoId: gerado.id, canal: envio.canal };
+}
+
+async function criarCodigo(app: App, agora: Date): Promise<{ id: string; codigo: string }> {
   const codigo = randomInt(0, 1_000_000).toString().padStart(6, '0');
   const id = randomUUID();
-  await app.pool.query('UPDATE codigo_login SET usado_em = $1 WHERE usado_em IS NULL', [agora]);
-  await app.pool.query('INSERT INTO codigo_login (id, codigo_hash, expira_em) VALUES ($1, $2, $3)', [
+  await app.pool.query(`UPDATE codigo_login SET usado_em = $1 WHERE usado_em IS NULL`, [agora]);
+  await app.pool.query(`INSERT INTO codigo_login (id, codigo_hash, expira_em) VALUES ($1, $2, $3)`, [
     id,
     await gerarHash(codigo),
     new Date(agora.getTime() + CODIGO_MS),
   ]);
-  const envio = await app.correio.enviar(await carregarSmtp(app.pool), {
-    to: email,
+  return { id, codigo };
+}
+
+async function enviarCodigo(
+  app: App,
+  config: ConfigLogin,
+  codigo: string,
+): Promise<{ ok: true; canal: CanalCodigo } | { ok: false; aviso: string }> {
+  const telefone = config.telefone_2fa ? normalizarWhatsapp(config.telefone_2fa) : null;
+  if (telefone) {
+    const whatsapp = await app.evolution.enviarTexto(telefone, TEXTO_WHATSAPP(codigo));
+    if (whatsapp.ok) return { ok: true, canal: 'whatsapp' };
+  }
+  const smtp = await carregarSmtp(app.pool);
+  const envio = await app.correio.enviar(smtp, {
+    to: config.email_dono,
     subject: 'Código de acesso do PagaEu',
-    text: `Seu código de acesso é ${codigo}. Ele vale por 10 minutos e só pode ser usado uma vez.`,
+    text: TEXTO_EMAIL(codigo),
   });
-  if (!envio.ok) return { ok: false, aviso: 'Não foi possível reenviar o código.' };
-  return { ok: true, codigoId: id };
+  if (envio.ok) return { ok: true, canal: 'email' };
+  if (telefone) {
+    return {
+      ok: false,
+      aviso: 'Não foi possível enviar o código por WhatsApp nem por e-mail. Use a chave de emergência no servidor se o Evolution ou o SMTP estiverem fora.',
+    };
+  }
+  return { ok: false, aviso: 'Não foi possível enviar o código por e-mail. Use a chave de emergência no servidor se o SMTP estiver fora.' };
 }
 
 async function abrirSessao(app: App, agora: Date): Promise<string> {
