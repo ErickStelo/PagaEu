@@ -226,6 +226,15 @@ test('template, segredo e telas do painel', async () => {
     assert.match(lista.texto, /Lançamentos recorrentes/);
     assert.match(lista.texto, /03\/2026/);
     assert.match(lista.texto, /—/);
+    assert.match(lista.texto, /ficha-tabela-scroll/);
+    assert.match(lista.texto, /data-label="Descrição"/);
+    assert.match(lista.texto, /data-label="Fim"/);
+    assert.match(lista.texto, /overflow-x:auto/);
+    const historicoAba = await sessao.pedir('GET', `/pessoas/${id}?aba=historico`);
+    assert.match(historicoAba.texto, /Cobranças geradas/);
+    assert.match(historicoAba.texto, /ficha-tabela-scroll/);
+    assert.match(historicoAba.texto, /Nenhuma cobrança gerada ainda/);
+    assert.match(historicoAba.texto, /Pago em/);
     const gravado = await app().pool.query<{ fim_ano: number | null; fim_mes: number | null }>(
       'SELECT fim_ano, fim_mes FROM item WHERE pessoa_id = $1',
       [id],
