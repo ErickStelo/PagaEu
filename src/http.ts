@@ -842,7 +842,7 @@ rota('POST', '/configuracao', async (ctx) => {
     evolutionUrl: ctx.form.get('evolution_url') ?? '',
     evolutionInstance: ctx.form.get('evolution_instance') ?? '',
     evolutionApiKey: ctx.form.get('evolution_api_key') ?? '',
-    pixProvedor: ctx.form.get('pix_provedor') ?? 'mercadopago',
+    pixProvedor: ctx.form.get('pix_provedor') ?? 'nativo',
     pixChave: ctx.form.get('pix_chave') ?? '',
     pixRecebedor: ctx.form.get('pix_recebedor') ?? '',
     pixCidade: ctx.form.get('pix_cidade') ?? '',

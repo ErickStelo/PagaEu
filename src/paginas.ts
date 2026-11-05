@@ -1614,7 +1614,7 @@ export function paginaConfiguracao(
         smtpCriptografia: rascunho.smtpCriptografia,
         evolution: { ...config.evolution, url: rascunho.evolutionUrl, instancia: rascunho.evolutionInstance },
         pix: {
-          provedor: rascunho.pixProvedor === 'nativo' ? 'nativo' as const : 'mercadopago' as const,
+          provedor: 'nativo' as const,
           chave: rascunho.pixChave,
           recebedor: rascunho.pixRecebedor,
           cidade: rascunho.pixCidade,
@@ -1647,22 +1647,20 @@ export function paginaConfiguracao(
         <label${inv('senha_atual')}>Senha atual<input name="senha_atual" type="password" autocomplete="current-password"></label>
         <label${inv('senha_nova')}>Senha nova<input name="senha_nova" type="password" autocomplete="new-password"></label>
       </div>
-      <h2>PIX</h2>
-      <p class="muted">Vale para os próximos PIX emitidos; os já emitidos continuam com o provedor que os gerou. O PIX nativo usa copia e cola estático e a baixa automática lê o extrato do Mercado Pago. Baixa manual continua na cobrança.</p>
+      <h2>PIX (emissão local)</h2>
+      <p class="muted">Todo PIX novo é gerado aqui no painel (copia e cola estático + txid). O Mercado Pago <strong>não</strong> cria cobrança PIX — só consulta o extrato e baixa pagamentos no sistema.</p>
       <div class="row">
         <label${inv('conciliacao_intervalo_minutos')}>Consulta automática de cobranças em aberto<select name="conciliacao_intervalo_minutos">${opcoesConciliacao}</select></label>
       </div>
-      <p class="muted">Equivale ao botão do Dashboard: concilia PIX nativo no extrato e consulta PIX pendentes no Mercado Pago. O webhook do MP continua valendo para PIX gerados por lá. ${ultimaConciliacao}</p>
+      <p class="muted">Concilia PIX nativo no extrato do MP e consulta PIX antigos ainda pendentes no MP. ${ultimaConciliacao}</p>
+      <input type="hidden" name="pix_provedor" value="nativo">
       <div class="row">
-        <label${inv('pix_provedor')}>Gerar PIX por<select name="pix_provedor">
-          <option value="mercadopago" ${config.pix.provedor === 'mercadopago' ? 'selected' : ''}>Mercado Pago</option>
-          <option value="nativo" ${config.pix.provedor === 'nativo' ? 'selected' : ''}>PIX nativo (copia e cola estático)</option>
-        </select></label>
         <label${inv('pix_chave')}>Chave PIX<input name="pix_chave" maxlength="77" value="${e(config.pix.chave)}" placeholder="CPF, e-mail, +55... ou chave aleatória" autocomplete="off"></label>
         <label${inv('pix_recebedor')}>Recebedor<input name="pix_recebedor" maxlength="25" required value="${e(config.pix.recebedor)}"></label>
         <label${inv('pix_cidade')}>Cidade<input name="pix_cidade" maxlength="15" required value="${e(config.pix.cidade)}"></label>
       </div>
-      <h2>Mercado Pago</h2>
+      <h2>Mercado Pago (consulta e baixa)</h2>
+      <p class="muted">Access token para ler pagamentos recebidos e dar baixa automática. Não emite PIX.</p>
       <p>Token: ${config.mpAccessTokenDefinido ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}. Segredo do webhook: ${config.mpWebhookSecretDefinido ? etiqueta('definido: sim', 'ok') : etiqueta('definido: não', 'off')}.</p>
       <p>URL de notificação: <span class="codigo">${e(config.urlNotificacao || 'defina PAGAEU_PUBLIC_URL')}</span></p>
       <div class="row">

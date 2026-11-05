@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { acoesDisponiveis, mpPermiteCancelar } from '../src/domain/acoes.ts';
 import { mesesDoGrafico, normalizarPeriodo, situacaoCobranca } from '../src/domain/painel.ts';
@@ -132,6 +133,13 @@ test('troca de dia segue o exemplo de junho', () => {
   const hojeMesmo = planejarTrocaDeDia({ hoje, diaAtual: 5, diaNovo: 10, temCobrancaAtivaNoMes: false });
   assert.equal(hojeMesmo.diaCobranca, 10);
   assert.match(hojeMesmo.avisos[0] ?? '', /09:00 já passou/);
+});
+
+test('emissão PIX é só local (sem app.mp.criar no módulo de provedores)', () => {
+  const fonte = readFileSync(new URL('../src/provedoresPix.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(fonte, /mp\.criar/);
+  assert.doesNotMatch(fonte, /emitirMercadoPago/);
+  assert.doesNotMatch(fonte, /mercadopago\.com/);
 });
 
 test('período do dashboard, meses do gráfico e situação da cobrança', () => {

@@ -1,10 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import type { App } from './app.ts';
-import { carregarPix, carregarTokenMp, type ProvedorPix } from './configuracao.ts';
+import { carregarTokenMp, type ProvedorPix } from './configuracao.ts';
 import { comTravaPessoa, consultar, transacao, type Cliente, type Consultavel } from './db.ts';
 import { acoesDisponiveis, mpPermiteCancelar, type StatusCobranca, type StatusPix } from './domain/acoes.ts';
-import { diaEfetivo, formatarCompetencia, partesNoFuso, somarDias } from './domain/calendar.ts';
+import {
+  diaEfetivo,
+  formatarCompetencia,
+  limiteAvisoInadimplencia,
+  partesNoFuso,
+  somarDias,
+  vencimentoCobranca,
+} from './domain/calendar.ts';
 import { comporLinhas, type LinhaRascunho } from './domain/composicao.ts';
+import { notificacoesCobrancaDevidas } from './domain/notificacoes-cobranca.ts';
 import type { PagamentoRemoto } from './gateways.ts';
 import { enviarMensagem } from './mensagens.ts';
 import { emitirPix } from './provedoresPix.ts';
@@ -579,7 +587,6 @@ async function concluirEmissao(
   cliente: Cliente,
   entrada: {
     pixId: string;
-    provedor: ProvedorPix;
     chave: string;
     pessoa: PessoaCobranca;
     cobrancaId: string;
@@ -590,7 +597,7 @@ async function concluirEmissao(
     agora: Date;
   },
 ): Promise<boolean> {
-  const emitido = await emitirPix(app, cliente, entrada.provedor, entrada);
+  const emitido = await emitirPix(app, cliente, entrada);
   if (!emitido.ok) {
     await falharEmissao(cliente, entrada.pixId, emitido.motivo, entrada.agora);
     return false;
@@ -598,7 +605,7 @@ async function concluirEmissao(
   await transacao(cliente, async () => {
     await cliente.query(
       `UPDATE pix
-       SET mp_payment_id = $2, status_local = 'pendente', mp_status = $3, mp_status_detail = $4,
+       SET provedor = 'nativo', mp_payment_id = $2, status_local = 'pendente', mp_status = $3, mp_status_detail = $4,
            copia_e_cola = $5, ticket_url = $6, verificado_em = $7, motivo = NULL, txid = $8
        WHERE id = $1`,
       [
@@ -693,7 +700,6 @@ export async function gerarCobranca(
     if (rascunhos.length === 0 || total <= 0) return { ok: false, aviso: 'nenhum item para este mês' };
     const pixId = randomUUID();
     const chave = randomUUID();
-    const { provedor } = await carregarPix(cliente);
     const vence = somarDias(agora, pessoa.validade_pix_dias);
     try {
       await transacao(cliente, async () => {
@@ -715,7 +721,7 @@ export async function gerarCobranca(
         await cliente.query(
           `INSERT INTO pix (id, cobranca_id, provedor, idempotency_key, valor_centavos, validade_dias, vence_em, status_local)
            VALUES ($1,$2,$3,$4,$5,$6,$7,'emitindo')`,
-          [pixId, cobrancaId, provedor, chave, total, pessoa.validade_pix_dias, vence],
+          [pixId, cobrancaId, 'nativo', chave, total, pessoa.validade_pix_dias, vence],
         );
         await marcarAlertas(cliente, pessoaId);
       });
@@ -723,7 +729,7 @@ export async function gerarCobranca(
       if (codigoPg(erro) === '23505') return { ok: false, aviso: `já existe cobrança em ${formatarCompetencia(ano, mes)}` };
       throw erro;
     }
-    const pixOk = await concluirEmissao(app, cliente, { pixId, provedor, chave, pessoa, cobrancaId, ano, mes, total, vence, agora });
+    const pixOk = await concluirEmissao(app, cliente, { pixId, chave, pessoa, cobrancaId, ano, mes, total, vence, agora });
     if (pixOk) await enviarMensagem(app, cliente, cobrancaId, 'cobranca', agora);
     if (anterior) {
       const aindaAtivo = await pixAtivo(cliente, anterior.id);
@@ -959,18 +965,16 @@ export async function gerarNovoPix(app: App, cobrancaId: string, agora = app.clo
     if (total <= 0) return { ok: false, aviso: 'A cobrança não tem valor para um PIX.' };
     const pixId = randomUUID();
     const chave = randomUUID();
-    const { provedor } = await carregarPix(cliente);
     const vence = somarDias(agora, pessoa.validade_pix_dias);
     await transacao(cliente, async () => {
       await cliente.query(
         `INSERT INTO pix (id, cobranca_id, provedor, idempotency_key, valor_centavos, validade_dias, vence_em, status_local)
          VALUES ($1,$2,$3,$4,$5,$6,$7,'emitindo')`,
-        [pixId, cobranca.id, provedor, chave, total, pessoa.validade_pix_dias, vence],
+        [pixId, cobranca.id, 'nativo', chave, total, pessoa.validade_pix_dias, vence],
       );
     });
     await concluirEmissao(app, cliente, {
       pixId,
-      provedor,
       chave,
       pessoa,
       cobrancaId: cobranca.id,
@@ -1004,7 +1008,6 @@ export async function tentarEmissao(app: App, cobrancaId: string, agora = app.cl
     });
     const ok = await concluirEmissao(app, cliente, {
       pixId: pix.id,
-      provedor: pix.provedor,
       chave: pix.idempotency_key,
       pessoa,
       cobrancaId: cobranca.id,

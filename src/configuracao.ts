@@ -142,7 +142,7 @@ export async function carregarEvolution(cliente: Consultavel): Promise<Credencia
 
 function pixDaLinha(atual: LinhaConfig): PixConfig {
   return {
-    provedor: atual.pix_provedor,
+    provedor: 'nativo',
     chave: atual.pix_chave?.trim() ?? '',
     recebedor: atual.pix_recebedor,
     cidade: atual.pix_cidade,
@@ -257,7 +257,7 @@ export type EntradaConfig = {
 };
 
 function validarPix(entrada: PixConfig): string | null {
-  if (entrada.provedor === 'nativo' && !entrada.chave) return 'Informe a chave PIX para usar o PIX nativo.';
+  if (!entrada.chave) return 'Informe a chave PIX.';
   if (entrada.chave.length > LIMITE_CHAVE_PIX) return `A chave PIX pode ter no máximo ${LIMITE_CHAVE_PIX} caracteres.`;
   if (!entrada.recebedor || entrada.recebedor.length > LIMITE_RECEBEDOR_PIX) {
     return `Informe o nome do recebedor (até ${LIMITE_RECEBEDOR_PIX} caracteres).`;
@@ -291,11 +291,8 @@ export async function salvarConfiguracao(app: App, entrada: EntradaConfig): Prom
   }
   const evolutionUrl = entrada.evolutionUrl.trim();
   const evolutionInstance = entrada.evolutionInstance.trim();
-  if (entrada.pixProvedor !== 'mercadopago' && entrada.pixProvedor !== 'nativo') {
-    return { ok: false, aviso: 'Escolha como o PIX será gerado.', campo: 'pix_provedor' };
-  }
   const pix: PixConfig = {
-    provedor: entrada.pixProvedor,
+    provedor: 'nativo',
     chave: entrada.pixChave.trim(),
     recebedor: entrada.pixRecebedor.trim(),
     cidade: entrada.pixCidade.trim(),
