@@ -883,6 +883,9 @@ function rascunhoPessoa(ctx: Ctx) {
     diaCobranca: campo(ctx, 'dia_cobranca'),
     validadePixDias: campo(ctx, 'validade_pix_dias'),
     diasAviso: campo(ctx, 'dias_aviso_inadimplencia'),
+    cobrancaNotificacoesQtd: campo(ctx, 'cobranca_notificacoes_qtd'),
+    cobrancaNotificacoesIntervaloDias: campo(ctx, 'cobranca_notificacoes_intervalo_dias'),
+    cobrancaNotificacoesAposVencimentoDias: campo(ctx, 'cobranca_notificacoes_apos_vencimento_dias'),
     canalEmail: marcado(ctx.form, 'canal_email'),
     canalWhatsapp: marcado(ctx.form, 'canal_whatsapp'),
   };
@@ -1023,6 +1026,9 @@ function entradaPessoa(ctx: Ctx) {
     diaCobranca: inteiro(ctx.form.get('dia_cobranca')),
     validadePixDias: inteiro(ctx.form.get('validade_pix_dias')),
     diasAviso: inteiro(ctx.form.get('dias_aviso_inadimplencia')),
+    cobrancaNotificacoesQtd: inteiro(ctx.form.get('cobranca_notificacoes_qtd')),
+    cobrancaNotificacoesIntervaloDias: inteiro(ctx.form.get('cobranca_notificacoes_intervalo_dias')),
+    cobrancaNotificacoesAposVencimentoDias: inteiro(ctx.form.get('cobranca_notificacoes_apos_vencimento_dias')),
     canalEmail: marcado(ctx.form, 'canal_email'),
     canalWhatsapp: marcado(ctx.form, 'canal_whatsapp'),
   };

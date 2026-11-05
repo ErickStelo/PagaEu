@@ -104,6 +104,30 @@ export function formatarExpiracaoMp(data: Date): string {
   return `${ano}-${mes}-${dia}T${hora}:${minuto}:${segundo}.000${sinal}${horas}:${minutos}`;
 }
 
+/** Vencimento da cobrança: dia efetivo de cobrança + prazo (dias), às 09:00 SP. */
+export function vencimentoCobranca(entrada: {
+  competenciaAno: number;
+  competenciaMes: number;
+  diaCobranca: number;
+  prazoDias: number;
+}): Date {
+  const dia = diaEfetivo(entrada.diaCobranca, entrada.competenciaAno, entrada.competenciaMes);
+  const inicio = civilParaUtc(entrada.competenciaAno, entrada.competenciaMes, dia, 9, 0, 0);
+  return somarDias(inicio, entrada.prazoDias);
+}
+
+/** Primeiro instante do aviso de inadimplência: 09:00 SP no dia efetivo + N dias. */
+export function limiteAvisoInadimplencia(entrada: {
+  competenciaAno: number;
+  competenciaMes: number;
+  diaCobranca: number;
+  diasAposCobranca: number;
+}): Date {
+  const dia = diaEfetivo(entrada.diaCobranca, entrada.competenciaAno, entrada.competenciaMes);
+  const inicio = civilParaUtc(entrada.competenciaAno, entrada.competenciaMes, dia, 9, 0, 0);
+  return somarDias(inicio, entrada.diasAposCobranca);
+}
+
 export function chaveDiaria(data: Date): string | null {
   const partes = partesNoFuso(data);
   if (partes.hour !== 9 || partes.minute !== 0) return null;

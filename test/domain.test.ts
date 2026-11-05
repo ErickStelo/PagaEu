@@ -13,7 +13,9 @@ import {
   diaEfetivo,
   formatarExpiracaoMp,
   somarDias,
+  vencimentoCobranca,
 } from '../src/domain/calendar.ts';
+import { notificacoesCobrancaDevidas } from '../src/domain/notificacoes-cobranca.ts';
 import { comporLinhas, itemCobreCompetencia, type ItemComposicao, type LinhaRascunho } from '../src/domain/composicao.ts';
 import { planejarTrocaDeDia } from '../src/domain/dia.ts';
 import { normalizarCpf, normalizarWhatsapp } from '../src/domain/documento.ts';
@@ -133,6 +135,15 @@ test('troca de dia segue o exemplo de junho', () => {
   const hojeMesmo = planejarTrocaDeDia({ hoje, diaAtual: 5, diaNovo: 10, temCobrancaAtivaNoMes: false });
   assert.equal(hojeMesmo.diaCobranca, 10);
   assert.match(hojeMesmo.avisos[0] ?? '', /09:00 já passou/);
+});
+
+test('lembretes de cobrança seguem o vencimento da cobrança', () => {
+  const vence = vencimentoCobranca({ competenciaAno: 2026, competenciaMes: 4, diaCobranca: 10, prazoDias: 10 });
+  assert.equal(vence.toISOString(), civilParaUtc(2026, 4, 20, 9, 0, 0).toISOString());
+  const config = { quantidade: 3, intervaloDias: 2, aposVencimentoDias: 2 };
+  assert.equal(notificacoesCobrancaDevidas(civilParaUtc(2026, 4, 19, 9, 0, 0), vence, config, true), 1);
+  assert.equal(notificacoesCobrancaDevidas(civilParaUtc(2026, 4, 22, 9, 0, 0), vence, config, true), 2);
+  assert.equal(notificacoesCobrancaDevidas(civilParaUtc(2026, 4, 24, 9, 0, 0), vence, config, true), 3);
 });
 
 test('emissão PIX é só local (sem app.mp.criar no módulo de provedores)', () => {

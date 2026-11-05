@@ -17,6 +17,9 @@ export type Pessoa = {
   dia_pendente_mes: number | null;
   validade_pix_dias: number;
   dias_aviso_inadimplencia: number;
+  cobranca_notificacoes_qtd: number;
+  cobranca_notificacoes_intervalo_dias: number;
+  cobranca_notificacoes_apos_vencimento_dias: number;
   canal_email: boolean;
   canal_whatsapp: boolean;
   ativa: boolean;
@@ -41,6 +44,9 @@ export type EntradaPessoa = {
   diaCobranca: number;
   validadePixDias?: number;
   diasAviso?: number;
+  cobrancaNotificacoesQtd?: number;
+  cobrancaNotificacoesIntervaloDias?: number;
+  cobrancaNotificacoesAposVencimentoDias?: number;
   canalEmail?: boolean;
   canalWhatsapp?: boolean;
 };
@@ -53,6 +59,9 @@ type PessoaNormalizada = {
   diaCobranca: number;
   validadePixDias: number;
   diasAviso: number;
+  cobrancaNotificacoesQtd: number;
+  cobrancaNotificacoesIntervaloDias: number;
+  cobrancaNotificacoesAposVencimentoDias: number;
   canalEmail: boolean;
   canalWhatsapp: boolean;
 };
@@ -75,8 +84,14 @@ function normalizarPessoa(entrada: EntradaPessoa, criacao: boolean): PessoaNorma
   }
   const validade = entrada.validadePixDias ?? 10;
   const aviso = entrada.diasAviso ?? 5;
+  const notifQtd = entrada.cobrancaNotificacoesQtd ?? 3;
+  const notifIntervalo = entrada.cobrancaNotificacoesIntervaloDias ?? 2;
+  const notifApos = entrada.cobrancaNotificacoesAposVencimentoDias ?? 2;
   if (!Number.isInteger(validade) || validade < 1 || validade > 30) return 'A validade do PIX precisa estar entre 1 e 30 dias.';
   if (!Number.isInteger(aviso) || aviso < 1 || aviso > 60) return 'Os dias de aviso precisam estar entre 1 e 60.';
+  if (!Number.isInteger(notifQtd) || notifQtd < 1 || notifQtd > 10) return 'A quantidade de notificações precisa estar entre 1 e 10.';
+  if (!Number.isInteger(notifIntervalo) || notifIntervalo < 1 || notifIntervalo > 60) return 'O intervalo das notificações precisa estar entre 1 e 60 dias.';
+  if (!Number.isInteger(notifApos) || notifApos < 0 || notifApos > 60) return 'Os dias após o vencimento da cobrança precisam estar entre 0 e 60.';
   return {
     nome,
     whatsapp,
@@ -85,6 +100,9 @@ function normalizarPessoa(entrada: EntradaPessoa, criacao: boolean): PessoaNorma
     diaCobranca: entrada.diaCobranca,
     validadePixDias: validade,
     diasAviso: aviso,
+    cobrancaNotificacoesQtd: notifQtd,
+    cobrancaNotificacoesIntervaloDias: notifIntervalo,
+    cobrancaNotificacoesAposVencimentoDias: notifApos,
     canalEmail: entrada.canalEmail ?? (criacao ? true : false),
     canalWhatsapp: entrada.canalWhatsapp ?? (criacao ? true : false),
   };
@@ -106,8 +124,9 @@ export async function criarPessoa(app: App, entrada: EntradaPessoa): Promise<{ o
   await app.pool.query(
     `INSERT INTO pessoa (
       id, nome, whatsapp, email, cpf, dia_cobranca, validade_pix_dias, dias_aviso_inadimplencia,
+      cobranca_notificacoes_qtd, cobranca_notificacoes_intervalo_dias, cobranca_notificacoes_apos_vencimento_dias,
       canal_email, canal_whatsapp, ativa
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)`,
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true)`,
     [
       id,
       normalizada.nome,
@@ -117,6 +136,9 @@ export async function criarPessoa(app: App, entrada: EntradaPessoa): Promise<{ o
       normalizada.diaCobranca,
       normalizada.validadePixDias,
       normalizada.diasAviso,
+      normalizada.cobrancaNotificacoesQtd,
+      normalizada.cobrancaNotificacoesIntervaloDias,
+      normalizada.cobrancaNotificacoesAposVencimentoDias,
       normalizada.canalEmail,
       normalizada.canalWhatsapp,
     ],
@@ -152,7 +174,9 @@ export async function atualizarPessoa(
       nome = $2, whatsapp = $3, email = $4, cpf = $5,
       dia_cobranca = $6, dia_cobranca_pendente = $7, dia_pendente_ano = $8, dia_pendente_mes = $9,
       validade_pix_dias = $10, dias_aviso_inadimplencia = $11,
-      canal_email = $12, canal_whatsapp = $13, atualizado_em = $14
+      cobranca_notificacoes_qtd = $12, cobranca_notificacoes_intervalo_dias = $13,
+      cobranca_notificacoes_apos_vencimento_dias = $14,
+      canal_email = $15, canal_whatsapp = $16, atualizado_em = $17
      WHERE id = $1`,
     [
       id,
@@ -166,6 +190,9 @@ export async function atualizarPessoa(
       plano.pendenteMes,
       normalizada.validadePixDias,
       normalizada.diasAviso,
+      normalizada.cobrancaNotificacoesQtd,
+      normalizada.cobrancaNotificacoesIntervaloDias,
+      normalizada.cobrancaNotificacoesAposVencimentoDias,
       normalizada.canalEmail,
       normalizada.canalWhatsapp,
       agora,

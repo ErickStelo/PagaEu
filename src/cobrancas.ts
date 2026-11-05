@@ -3,8 +3,16 @@ import type { App } from './app.ts';
 import { carregarTokenMp, type ProvedorPix } from './configuracao.ts';
 import { comTravaPessoa, consultar, transacao, type Cliente, type Consultavel } from './db.ts';
 import { acoesDisponiveis, mpPermiteCancelar, type StatusCobranca, type StatusPix } from './domain/acoes.ts';
-import { diaEfetivo, formatarCompetencia, partesNoFuso, somarDias } from './domain/calendar.ts';
+import {
+  diaEfetivo,
+  formatarCompetencia,
+  limiteAvisoInadimplencia,
+  partesNoFuso,
+  somarDias,
+  vencimentoCobranca,
+} from './domain/calendar.ts';
 import { comporLinhas, type LinhaRascunho } from './domain/composicao.ts';
+import { notificacoesCobrancaDevidas } from './domain/notificacoes-cobranca.ts';
 import type { PagamentoRemoto } from './gateways.ts';
 import { enviarMensagem } from './mensagens.ts';
 import { emitirPix } from './provedoresPix.ts';
@@ -47,6 +55,7 @@ type Pix = {
   mp_status_detail: string | null;
   aviso_inadimplencia_em: Date | null;
   motivo: string | null;
+  cobranca_notificacoes_auto: number;
 };
 
 type PessoaCobranca = {
@@ -58,6 +67,9 @@ type PessoaCobranca = {
   dia_cobranca: number;
   validade_pix_dias: number;
   dias_aviso_inadimplencia: number;
+  cobranca_notificacoes_qtd: number;
+  cobranca_notificacoes_intervalo_dias: number;
+  cobranca_notificacoes_apos_vencimento_dias: number;
   canal_email: boolean;
   canal_whatsapp: boolean;
   ativa: boolean;
@@ -90,6 +102,7 @@ async function pessoaPorId(cliente: Consultavel, id: string): Promise<PessoaCobr
   const linhas = await consultar<PessoaCobranca>(
     cliente,
     `SELECT id, nome, email, cpf, whatsapp, dia_cobranca, validade_pix_dias, dias_aviso_inadimplencia,
+            cobranca_notificacoes_qtd, cobranca_notificacoes_intervalo_dias, cobranca_notificacoes_apos_vencimento_dias,
             canal_email, canal_whatsapp, ativa
      FROM pessoa WHERE id = $1`,
     [id],
@@ -722,7 +735,14 @@ export async function gerarCobranca(
       throw erro;
     }
     const pixOk = await concluirEmissao(app, cliente, { pixId, chave, pessoa, cobrancaId, ano, mes, total, vence, agora });
-    if (pixOk) await enviarMensagem(app, cliente, cobrancaId, 'cobranca', agora);
+    if (pixOk) {
+      const envio = await enviarMensagem(app, cliente, cobrancaId, 'cobranca', agora);
+      if (envio?.ok) {
+        await transacao(cliente, async () => {
+          await cliente.query('UPDATE pix SET cobranca_notificacoes_auto = 1 WHERE id = $1', [pixId]);
+        });
+      }
+    }
     if (anterior) {
       const aindaAtivo = await pixAtivo(cliente, anterior.id);
       if (aindaAtivo) await invalidarUmPix(app, cliente, aindaAtivo.id, agora, new Set());
@@ -1120,6 +1140,74 @@ export async function verificarPixAtivos(app: App, agora = app.clock()): Promise
   }
 }
 
+async function sincronizarContadorPrimeiraNotificacao(cliente: Cliente, cobrancaId: string, pix: Pix): Promise<Pix> {
+  if (pix.cobranca_notificacoes_auto >= 1) return pix;
+  const enviado = await consultar<{ id: string }>(
+    cliente,
+    `SELECT id FROM envio
+     WHERE cobranca_id = $1 AND tipo = 'cobranca' AND resultado = 'enviado'
+     LIMIT 1`,
+    [cobrancaId],
+  );
+  if (!enviado.length) return pix;
+  await transacao(cliente, async () => {
+    await cliente.query(
+      'UPDATE pix SET cobranca_notificacoes_auto = 1 WHERE id = $1 AND cobranca_notificacoes_auto < 1',
+      [pix.id],
+    );
+  });
+  return { ...pix, cobranca_notificacoes_auto: 1 };
+}
+
+export async function enviarNotificacoesCobrancaDevidas(app: App, agora = app.clock()): Promise<void> {
+  const abertas = await consultar<{ id: string; pessoa_id: string }>(
+    app.pool,
+    `SELECT id, pessoa_id FROM cobranca WHERE status = 'aberta'`,
+  );
+  for (const cobranca of abertas) {
+    try {
+      await comTravaPessoa(app.pool, cobranca.pessoa_id, async (cliente) => {
+        const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
+        if (vigente?.id !== cobranca.id) return;
+        const detalhe = await cobrancaPorId(cliente, cobranca.id);
+        const pessoa = await pessoaPorId(cliente, cobranca.pessoa_id);
+        let pix = await ultimoPix(cliente, cobranca.id);
+        if (!detalhe || !pessoa || !pix?.copia_e_cola) return;
+        if (pix.status_local === 'emitindo' || pix.status_local === 'falha_emissao') return;
+        pix = await sincronizarContadorPrimeiraNotificacao(cliente, cobranca.id, pix);
+        const vence = vencimentoCobranca({
+          competenciaAno: detalhe.competencia_ano,
+          competenciaMes: detalhe.competencia_mes,
+          diaCobranca: pessoa.dia_cobranca,
+          prazoDias: pessoa.validade_pix_dias,
+        });
+        const devidas = notificacoesCobrancaDevidas(
+          agora,
+          vence,
+          {
+            quantidade: pessoa.cobranca_notificacoes_qtd,
+            intervaloDias: pessoa.cobranca_notificacoes_intervalo_dias,
+            aposVencimentoDias: pessoa.cobranca_notificacoes_apos_vencimento_dias,
+          },
+          true,
+        );
+        if (pix.cobranca_notificacoes_auto >= devidas) return;
+        const proxima = pix.cobranca_notificacoes_auto + 1;
+        const envio = await enviarMensagem(app, cliente, cobranca.id, 'cobranca', agora, undefined, {
+          permitirPixEncerrado: proxima >= 2,
+        });
+        if (envio?.ok) {
+          await transacao(cliente, async () => {
+            await cliente.query('UPDATE pix SET cobranca_notificacoes_auto = $2 WHERE id = $1', [pix.id, proxima]);
+          });
+        }
+      });
+    } catch (erro) {
+      console.error(`Falha na notificação de cobrança ${cobranca.id}: ${mensagemErro(erro)}`);
+    }
+  }
+}
+
 export async function enviarInadimplenciasDevidas(app: App, agora = app.clock()): Promise<void> {
   const abertas = await consultar<{ id: string; pessoa_id: string }>(
     app.pool,
@@ -1130,11 +1218,17 @@ export async function enviarInadimplenciasDevidas(app: App, agora = app.clock())
       await comTravaPessoa(app.pool, cobranca.pessoa_id, async (cliente) => {
         const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
         if (vigente?.id !== cobranca.id) return;
+        const detalhe = await cobrancaPorId(cliente, cobranca.id);
         const pessoa = await pessoaPorId(cliente, cobranca.pessoa_id);
         const pix = await ultimoPix(cliente, cobranca.id);
-        if (!pessoa || !pix || pix.aviso_inadimplencia_em) return;
+        if (!detalhe || !pessoa || !pix || pix.aviso_inadimplencia_em) return;
         if (pix.status_local !== 'pendente' && pix.status_local !== 'expirado' && pix.status_local !== 'falha_cancelamento') return;
-        const limite = somarDias(pix.vence_em, pessoa.dias_aviso_inadimplencia);
+        const limite = limiteAvisoInadimplencia({
+          competenciaAno: detalhe.competencia_ano,
+          competenciaMes: detalhe.competencia_mes,
+          diaCobranca: pessoa.dia_cobranca,
+          diasAposCobranca: pessoa.dias_aviso_inadimplencia,
+        });
         if (agora.getTime() < limite.getTime()) return;
         await enviarMensagem(app, cliente, cobranca.id, 'inadimplencia', agora);
         await transacao(cliente, async () => {

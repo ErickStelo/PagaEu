@@ -4,6 +4,7 @@ import {
   aplicarDiasPendentes,
   consultarCobrancasAbertas,
   enviarInadimplenciasDevidas,
+  enviarNotificacoesCobrancaDevidas,
   gerarDoDia,
 } from './cobrancas.ts';
 import { chaveDiaria, chaveHoraria } from './domain/calendar.ts';
@@ -12,11 +13,13 @@ import { mensagemErro } from './texto.ts';
 
 export async function executarJobDiario(app: App, agora = app.clock()): Promise<void> {
   await gerarDoDia(app, agora);
+  await enviarNotificacoesCobrancaDevidas(app, agora);
   await enviarInadimplenciasDevidas(app, agora);
   await aplicarDiasPendentes(app, agora);
 }
 
 export async function executarVerificacaoHoraria(app: App, agora = app.clock()): Promise<void> {
+  await enviarNotificacoesCobrancaDevidas(app, agora);
   await enviarInadimplenciasDevidas(app, agora);
 }
 

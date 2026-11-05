@@ -752,6 +752,9 @@ export type RascunhoPessoa = {
   diaCobranca: string;
   validadePixDias: string;
   diasAviso: string;
+  cobrancaNotificacoesQtd: string;
+  cobrancaNotificacoesIntervaloDias: string;
+  cobrancaNotificacoesAposVencimentoDias: string;
   canalEmail: boolean;
   canalWhatsapp: boolean;
 };
@@ -1318,6 +1321,13 @@ function abaInformacoesFicha(dados: FichaPessoaDados): string {
   const dia = rascunho ? rascunho.diaCobranca : String(pessoa.dia_cobranca_pendente ?? pessoa.dia_cobranca);
   const validade = rascunho ? rascunho.validadePixDias : String(pessoa.validade_pix_dias);
   const avisoDias = rascunho ? rascunho.diasAviso : String(pessoa.dias_aviso_inadimplencia);
+  const notifQtd = rascunho ? rascunho.cobrancaNotificacoesQtd : String(pessoa.cobranca_notificacoes_qtd ?? 3);
+  const notifIntervalo = rascunho
+    ? rascunho.cobrancaNotificacoesIntervaloDias
+    : String(pessoa.cobranca_notificacoes_intervalo_dias ?? 2);
+  const notifApos = rascunho
+    ? rascunho.cobrancaNotificacoesAposVencimentoDias
+    : String(pessoa.cobranca_notificacoes_apos_vencimento_dias ?? 2);
   const emailLigado = rascunho ? rascunho.canalEmail : pessoa.canal_email;
   const whatsappLigado = rascunho ? rascunho.canalWhatsapp : pessoa.canal_whatsapp;
   return `<form class="bloco" method="post" action="/pessoas/${e(pessoa.id)}">
@@ -1330,7 +1340,10 @@ function abaInformacoesFicha(dados: FichaPessoaDados): string {
         <label>CPF<input name="cpf" value="${e(cpf)}" placeholder="opcional"></label>
         <label>Dia de cobrança<input name="dia_cobranca" type="number" min="1" max="31" required value="${e(dia)}"></label>
         <label>Validade do PIX (dias)<input name="validade_pix_dias" type="number" min="1" max="30" required value="${e(validade)}"></label>
-        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}"></label>
+        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}" title="Após o dia de cobrança"></label>
+        <label>Notificações de cobrança (total)<input name="cobranca_notificacoes_qtd" type="number" min="1" max="10" required value="${e(notifQtd)}" title="Inclui a 1ª na geração"></label>
+        <label>Intervalo (dias)<input name="cobranca_notificacoes_intervalo_dias" type="number" min="1" max="60" required value="${e(notifIntervalo)}"></label>
+        <label>1º lembrete após venc. cobrança (dias)<input name="cobranca_notificacoes_apos_vencimento_dias" type="number" min="0" max="60" required value="${e(notifApos)}" title="Após dia de cobrança + validade"></label>
         <div class="checks linha-inteira">
           <label><input type="checkbox" name="canal_email" value="1" ${emailLigado ? 'checked' : ''}> E-mail</label>
           <label><input type="checkbox" name="canal_whatsapp" value="1" ${whatsappLigado ? 'checked' : ''}> WhatsApp</label>
@@ -1451,6 +1464,9 @@ export function paginaPessoa(
   const dia = rascunho?.diaCobranca ?? '10';
   const validade = rascunho?.validadePixDias ?? '10';
   const avisoDias = rascunho?.diasAviso ?? '5';
+  const notifQtd = rascunho?.cobrancaNotificacoesQtd ?? '3';
+  const notifIntervalo = rascunho?.cobrancaNotificacoesIntervaloDias ?? '2';
+  const notifApos = rascunho?.cobrancaNotificacoesAposVencimentoDias ?? '2';
   const emailLigado = rascunho ? rascunho.canalEmail : true;
   const whatsappLigado = rascunho ? rascunho.canalWhatsapp : true;
   return `<h1>Nova pessoa</h1>
@@ -1464,7 +1480,10 @@ export function paginaPessoa(
         <label>CPF<input name="cpf" value="${e(cpf)}" placeholder="opcional"></label>
         <label>Dia de cobrança<input name="dia_cobranca" type="number" min="1" max="31" required value="${e(dia)}"></label>
         <label>Validade do PIX (dias)<input name="validade_pix_dias" type="number" min="1" max="30" required value="${e(validade)}"></label>
-        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}"></label>
+        <label>Dias para o aviso<input name="dias_aviso_inadimplencia" type="number" min="1" max="60" required value="${e(avisoDias)}" title="Após o dia de cobrança"></label>
+        <label>Notificações de cobrança (total)<input name="cobranca_notificacoes_qtd" type="number" min="1" max="10" required value="${e(notifQtd)}" title="Inclui a 1ª na geração"></label>
+        <label>Intervalo (dias)<input name="cobranca_notificacoes_intervalo_dias" type="number" min="1" max="60" required value="${e(notifIntervalo)}"></label>
+        <label>1º lembrete após venc. cobrança (dias)<input name="cobranca_notificacoes_apos_vencimento_dias" type="number" min="0" max="60" required value="${e(notifApos)}" title="Após dia de cobrança + validade"></label>
         <div class="checks linha-inteira">
           <label><input type="checkbox" name="canal_email" value="1" ${emailLigado ? 'checked' : ''}> E-mail</label>
           <label><input type="checkbox" name="canal_whatsapp" value="1" ${whatsappLigado ? 'checked' : ''}> WhatsApp</label>

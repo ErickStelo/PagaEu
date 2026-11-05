@@ -34,7 +34,11 @@ type ContextoMsg = {
   temPixAtivo: boolean;
 };
 
-async function carregar(cliente: Cliente, cobrancaId: string): Promise<ContextoMsg | null> {
+async function carregar(
+  cliente: Cliente,
+  cobrancaId: string,
+  opcoes?: { permitirPixEncerrado?: boolean },
+): Promise<ContextoMsg | null> {
   const cobrancas = await consultar<{
     id: string;
     status: StatusCobranca;
@@ -98,7 +102,7 @@ async function carregar(cliente: Cliente, cobrancaId: string): Promise<ContextoM
     competencia: formatarCompetencia(cobranca.competencia_ano, cobranca.competencia_mes),
     linhas,
     total: linhas.reduce((soma, linha) => soma + linha.valor_centavos, 0),
-    copiaCola: ativo?.copia_e_cola ?? null,
+    copiaCola: ativo?.copia_e_cola ?? (opcoes?.permitirPixEncerrado ? ultimo?.copia_e_cola ?? null : null),
     validadeDias: ativo?.validade_dias ?? ultimo?.validade_dias ?? null,
     venceEm: ativo?.vence_em ?? ultimo?.vence_em ?? null,
     pagoEm: cobranca.paga_em,
@@ -164,12 +168,13 @@ export async function enviarMensagem(
   tipo: TipoMensagem,
   agora: Date,
   somenteCanal?: Canal,
+  opcoes?: { permitirPixEncerrado?: boolean },
 ): Promise<{ ok: boolean; motivo: string | null } | null> {
-  const ctx = await carregar(cliente, cobrancaId);
+  const ctx = await carregar(cliente, cobrancaId, opcoes);
   if (!ctx) return null;
   if ((tipo === 'cobranca' || tipo === 'inadimplencia') && ctx.status !== 'aberta') return null;
   if (tipo === 'confirmacao' && ctx.status !== 'paga') return null;
-  if (tipo === 'cobranca' && !ctx.temPixAtivo) return null;
+  if (tipo === 'cobranca' && !ctx.temPixAtivo && !(opcoes?.permitirPixEncerrado && ctx.copiaCola)) return null;
   const modelos = await consultar<{ canal: Canal; assunto: string | null; corpo: string }>(
     cliente,
     'SELECT canal, assunto, corpo FROM template WHERE tipo = $1',
