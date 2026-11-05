@@ -3,16 +3,8 @@ import type { App } from './app.ts';
 import { carregarTokenMp, type ProvedorPix } from './configuracao.ts';
 import { comTravaPessoa, consultar, transacao, type Cliente, type Consultavel } from './db.ts';
 import { acoesDisponiveis, mpPermiteCancelar, type StatusCobranca, type StatusPix } from './domain/acoes.ts';
-import {
-  diaEfetivo,
-  formatarCompetencia,
-  limiteAvisoInadimplencia,
-  partesNoFuso,
-  somarDias,
-  vencimentoCobranca,
-} from './domain/calendar.ts';
+import { diaEfetivo, formatarCompetencia, partesNoFuso, somarDias } from './domain/calendar.ts';
 import { comporLinhas, type LinhaRascunho } from './domain/composicao.ts';
-import { notificacoesCobrancaDevidas } from './domain/notificacoes-cobranca.ts';
 import type { PagamentoRemoto } from './gateways.ts';
 import { enviarMensagem } from './mensagens.ts';
 import { emitirPix } from './provedoresPix.ts';
