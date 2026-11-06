@@ -6,13 +6,16 @@ import { acoesDisponiveis, mpPermiteCancelar, type StatusCobranca, type StatusPi
 import {
   diaEfetivo,
   formatarCompetencia,
+  instanteVencimentoCivil,
   limiteAvisoInadimplencia,
+  ultimoDiaDoMes,
   partesNoFuso,
   somarDias,
   vencimentoCobranca,
 } from './domain/calendar.ts';
 import { comporLinhas, type LinhaRascunho } from './domain/composicao.ts';
 import { notificacoesCobrancaDevidas } from './domain/notificacoes-cobranca.ts';
+import { txidAvulsa } from './domain/pix.ts';
 import type { PagamentoRemoto } from './gateways.ts';
 import { enviarMensagem } from './mensagens.ts';
 import { emitirPix } from './provedoresPix.ts';
@@ -36,6 +39,8 @@ export type Cobranca = {
   alerta_itens_ja_pagos: boolean;
   cancelada_em: Date | null;
   motivo_cancelamento: string | null;
+  modalidade: 'mensal' | 'avulsa';
+  vencimento_em: Date | null;
 };
 
 type Pix = {
@@ -110,6 +115,47 @@ async function pessoaPorId(cliente: Consultavel, id: string): Promise<PessoaCobr
   return linhas[0] ?? null;
 }
 
+function txidDaEmissao(cobranca: Cobranca, nome: string): { txid?: string; aviso?: string } {
+  if (cobranca.modalidade !== 'avulsa') return {};
+  if (!cobranca.vencimento_em) return { aviso: 'Cobrança avulsa sem vencimento.' };
+  return {
+    txid: txidAvulsa(
+      nome,
+      cobranca.vencimento_em.getDate(),
+      cobranca.vencimento_em.getMonth() + 1,
+      cobranca.vencimento_em.getFullYear(),
+      randomUUID().slice(0, 4),
+    ),
+  };
+}
+
+export function linhasAvulsas(
+  itens: { descricao: string; valorCentavos: number }[],
+): { ok: true; linhas: { descricao: string; valorCentavos: number }[] } | { ok: false; aviso: string } {
+  const linhas: { descricao: string; valorCentavos: number }[] = [];
+  for (const item of itens) {
+    const descricao = item.descricao.trim();
+    if (!descricao) return { ok: false, aviso: 'Cada item precisa de uma descrição.' };
+    if (descricao.length > 200) return { ok: false, aviso: 'A descrição pode ter no máximo 200 caracteres.' };
+    if (!Number.isInteger(item.valorCentavos) || item.valorCentavos <= 0) {
+      return { ok: false, aviso: 'Cada item precisa de um valor maior que zero.' };
+    }
+    linhas.push({ descricao, valorCentavos: item.valorCentavos });
+  }
+  if (!linhas.length) return { ok: false, aviso: 'Informe ao menos um item.' };
+  return { ok: true, linhas };
+}
+
+function vencimentoParaAvisos(detalhe: Cobranca, pessoa: PessoaCobranca): Date {
+  if (detalhe.modalidade === 'avulsa' && detalhe.vencimento_em) return instanteVencimentoCivil(detalhe.vencimento_em);
+  return vencimentoCobranca({
+    competenciaAno: detalhe.competencia_ano,
+    competenciaMes: detalhe.competencia_mes,
+    diaCobranca: pessoa.dia_cobranca,
+    prazoDias: pessoa.validade_pix_dias,
+  });
+}
+
 async function cobrancaPorId(cliente: Consultavel, id: string): Promise<Cobranca | null> {
   const linhas = await consultar<Cobranca>(cliente, 'SELECT * FROM cobranca WHERE id = $1', [id]);
   return linhas[0] ?? null;
@@ -142,10 +188,11 @@ export async function vigenteDaPessoa(cliente: Consultavel, pessoaId: string): P
   const linhas = await consultar<Cobranca>(
     cliente,
     `SELECT * FROM cobranca c
-     WHERE c.pessoa_id = $1 AND c.status = 'aberta'
+     WHERE c.pessoa_id = $1 AND c.status = 'aberta' AND c.modalidade = 'mensal'
        AND NOT EXISTS (
          SELECT 1 FROM cobranca posterior
          WHERE posterior.pessoa_id = c.pessoa_id
+           AND posterior.modalidade = 'mensal'
            AND posterior.status IN ('aberta', 'paga')
            AND (posterior.competencia_ano, posterior.competencia_mes) > (c.competencia_ano, c.competencia_mes)
        )
@@ -161,10 +208,11 @@ export async function principalDaPessoa(cliente: Consultavel, pessoaId: string):
   const linhas = await consultar<Cobranca>(
     cliente,
     `SELECT * FROM cobranca c
-     WHERE c.pessoa_id = $1 AND c.status IN ('aberta', 'paga')
+     WHERE c.pessoa_id = $1 AND c.status IN ('aberta', 'paga') AND c.modalidade = 'mensal'
        AND NOT EXISTS (
          SELECT 1 FROM cobranca posterior
          WHERE posterior.pessoa_id = c.pessoa_id
+           AND posterior.modalidade = 'mensal'
            AND posterior.status IN ('aberta', 'paga')
            AND (posterior.competencia_ano, posterior.competencia_mes) > (c.competencia_ano, c.competencia_mes)
        )
@@ -179,7 +227,7 @@ async function ativaNaCompetencia(cliente: Consultavel, pessoaId: string, ano: n
   const linhas = await consultar<Cobranca>(
     cliente,
     `SELECT * FROM cobranca
-     WHERE pessoa_id = $1 AND competencia_ano = $2 AND competencia_mes = $3 AND status IN ('aberta', 'paga')
+     WHERE pessoa_id = $1 AND modalidade = 'mensal' AND competencia_ano = $2 AND competencia_mes = $3 AND status IN ('aberta', 'paga')
      LIMIT 1`,
     [pessoaId, ano, mes],
   );
@@ -189,7 +237,7 @@ async function ativaNaCompetencia(cliente: Consultavel, pessoaId: string, ano: n
 async function existeNoMes(cliente: Consultavel, pessoaId: string, ano: number, mes: number): Promise<boolean> {
   const linhas = await consultar<{ id: string }>(
     cliente,
-    'SELECT id FROM cobranca WHERE pessoa_id = $1 AND competencia_ano = $2 AND competencia_mes = $3 LIMIT 1',
+    `SELECT id FROM cobranca WHERE pessoa_id = $1 AND modalidade = 'mensal' AND competencia_ano = $2 AND competencia_mes = $3 LIMIT 1`,
     [pessoaId, ano, mes],
   );
   return linhas.length > 0;
@@ -199,7 +247,7 @@ async function ativaPosterior(cliente: Consultavel, pessoaId: string, ano: numbe
   const linhas = await consultar<Cobranca>(
     cliente,
     `SELECT * FROM cobranca
-     WHERE pessoa_id = $1 AND status IN ('aberta', 'paga')
+     WHERE pessoa_id = $1 AND modalidade = 'mensal' AND status IN ('aberta', 'paga')
        AND (competencia_ano, competencia_mes) > ($2, $3)
      ORDER BY competencia_ano, competencia_mes
      LIMIT 1`,
@@ -212,7 +260,7 @@ async function anteriorAtiva(cliente: Consultavel, pessoaId: string, ano: number
   const linhas = await consultar<Cobranca>(
     cliente,
     `SELECT * FROM cobranca
-     WHERE pessoa_id = $1 AND status IN ('aberta', 'paga')
+     WHERE pessoa_id = $1 AND modalidade = 'mensal' AND status IN ('aberta', 'paga')
        AND (competencia_ano, competencia_mes) < ($2, $3)
      ORDER BY competencia_ano DESC, competencia_mes DESC
      LIMIT 1`,
@@ -362,17 +410,18 @@ async function aplicarRemoto(cliente: Cliente, pix: Pix, remoto: PagamentoRemoto
       await registrarEvento(cliente, mpId, 'excedente', cobranca.id, remoto.valorCentavos, remoto.dateApproved ?? agora);
       return { tipo: 'excedente', confirmacaoId: null, ancestrais: [] };
     }
-    const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
+    const avulsa = cobranca.modalidade === 'avulsa';
+    const vigente = avulsa ? null : await vigenteDaPessoa(cliente, cobranca.pessoa_id);
     const quando = remoto.dateApproved ?? agora;
     await quitarCadeia(cliente, cobranca, quando, 'pagamento');
     await cliente.query(`UPDATE pix SET status_local = 'aprovado', motivo = NULL WHERE id = $1`, [pix.id]);
     await registrarEvento(cliente, mpId, 'baixa', cobranca.id, pix.valor_centavos, quando);
-    const quitouVigente = vigente?.id === cobranca.id;
+    const quitouVigente = avulsa || vigente?.id === cobranca.id;
     if (!quitouVigente) await marcarAlertas(cliente, cobranca.pessoa_id);
     return {
       tipo: 'baixa',
       confirmacaoId: cobranca.id,
-      ancestrais: quitouVigente ? await pixAtivosAnteriores(cliente, cobranca.id) : [],
+      ancestrais: quitouVigente && !avulsa ? await pixAtivosAnteriores(cliente, cobranca.id) : [],
     };
   }
   if (remoto.status === 'cancelled' || remoto.status === 'expired') {
@@ -600,9 +649,10 @@ async function concluirEmissao(
     total: number;
     vence: Date;
     agora: Date;
+    txid?: string;
   },
 ): Promise<boolean> {
-  const emitido = await emitirPix(app, cliente, entrada);
+  const emitido = await emitirPix(app, cliente, { ...entrada, txid: entrada.txid });
   if (!emitido.ok) {
     await falharEmissao(cliente, entrada.pixId, emitido.motivo, entrada.agora);
     return false;
@@ -759,6 +809,75 @@ export async function gerarCobranca(
   });
 }
 
+export async function criarCobrancaAvulsa(
+  app: App,
+  pessoaId: string,
+  vencimento: { ano: number; mes: number; dia: number },
+  itens: { descricao: string; valorCentavos: number }[],
+  agora = app.clock(),
+): Promise<{ ok: true; cobrancaId: string; pixOk: boolean } | { ok: false; aviso: string }> {
+  if (vencimento.mes < 1 || vencimento.mes > 12 || vencimento.dia < 1 || vencimento.dia > ultimoDiaDoMes(vencimento.ano, vencimento.mes)) {
+    return { ok: false, aviso: 'Data de vencimento inválida.' };
+  }
+  const normalizadas = linhasAvulsas(itens);
+  if (!normalizadas.ok) return normalizadas;
+  const linhas = normalizadas.linhas;
+  const total = linhas.reduce((soma, item) => soma + item.valorCentavos, 0);
+  return comTravaPessoa(app.pool, pessoaId, async (cliente) => {
+    const pessoa = await pessoaPorId(cliente, pessoaId);
+    if (!pessoa) return { ok: false, aviso: 'Pessoa não encontrada.' };
+    const cobrancaId = randomUUID();
+    const pixId = randomUUID();
+    const chave = randomUUID();
+    const txid = txidAvulsa(pessoa.nome, vencimento.dia, vencimento.mes, vencimento.ano, randomUUID().slice(0, 4));
+    const vencePix = somarDias(agora, pessoa.validade_pix_dias);
+    const vencimentoSql = `${vencimento.ano}-${String(vencimento.mes).padStart(2, '0')}-${String(vencimento.dia).padStart(2, '0')}`;
+    await transacao(cliente, async () => {
+      await cliente.query(
+        `INSERT INTO cobranca (
+          id, pessoa_id, competencia_ano, competencia_mes, anterior_id, origem_geracao, status,
+          canal_email_selecionado, canal_whatsapp_selecionado, modalidade, vencimento_em
+        ) VALUES ($1,$2,$3,$4,NULL,'manual','aberta',$5,$6,'avulsa',$7)`,
+        [cobrancaId, pessoaId, vencimento.ano, vencimento.mes, pessoa.canal_email, pessoa.canal_whatsapp, vencimentoSql],
+      );
+      for (const item of linhas) {
+        await cliente.query(
+          `INSERT INTO linha_cobranca (
+            id, cobranca_id, item_id, origem_cobranca_id, competencia_origem_ano, competencia_origem_mes, descricao, valor_centavos
+          ) VALUES ($1,$2,NULL,$3,$4,$5,$6,$7)`,
+          [randomUUID(), cobrancaId, cobrancaId, vencimento.ano, vencimento.mes, item.descricao, item.valorCentavos],
+        );
+      }
+      await cliente.query(
+        `INSERT INTO pix (id, cobranca_id, provedor, idempotency_key, valor_centavos, validade_dias, vence_em, status_local)
+         VALUES ($1,$2,'nativo',$3,$4,$5,$6,'emitindo')`,
+        [pixId, cobrancaId, chave, total, pessoa.validade_pix_dias, vencePix],
+      );
+    });
+    const pixOk = await concluirEmissao(app, cliente, {
+      pixId,
+      chave,
+      pessoa,
+      cobrancaId,
+      ano: vencimento.ano,
+      mes: vencimento.mes,
+      total,
+      vence: vencePix,
+      agora,
+      txid,
+    });
+    if (pixOk) {
+      const envio = await enviarMensagem(app, cliente, cobrancaId, 'cobranca', agora);
+      if (envio?.ok) {
+        await transacao(cliente, async () => {
+          await cliente.query('UPDATE pix SET cobranca_notificacoes_auto = 1 WHERE id = $1', [pixId]);
+        });
+      }
+    }
+    return { ok: true, cobrancaId, pixOk };
+  });
+}
+
 export async function gerarDoDia(app: App, agora: Date): Promise<void> {
   const hoje = partesNoFuso(agora);
   const pessoas = await consultar<{ id: string; dia_cobranca: number }>(
@@ -826,8 +945,9 @@ export async function baixaManual(
   if (!pessoaId) return { ok: false, aviso: 'A baixa manual só pode ser feita na cobrança vigente.' };
   return comTravaPessoa(app.pool, pessoaId, async (cliente) => {
     const cobranca = await cobrancaPorId(cliente, cobrancaId);
-    const vigente = cobranca ? await vigenteDaPessoa(cliente, cobranca.pessoa_id) : null;
-    if (!cobranca || cobranca.status !== 'aberta' || vigente?.id !== cobranca.id) {
+    const vigente = cobranca && cobranca.modalidade !== 'avulsa' ? await vigenteDaPessoa(cliente, cobranca.pessoa_id) : null;
+    const podeBaixar = cobranca?.modalidade === 'avulsa' || vigente?.id === cobranca?.id;
+    if (!cobranca || cobranca.status !== 'aberta' || !podeBaixar) {
       return { ok: false, aviso: 'A baixa manual só pode ser feita na cobrança vigente.' };
     }
     const pix = await pixAtivo(cliente, cobranca.id);
@@ -872,7 +992,9 @@ export async function cancelarCobranca(
     if (!cobranca) return { ok: false, aviso: 'Cobrança não encontrada.' };
     if (cobranca.status === 'paga') return { ok: false, aviso: 'Cobrança paga não pode ser cancelada.' };
     if (cobranca.status === 'cancelada') return { ok: false, aviso: 'A cobrança já está cancelada.' };
-    const posterior = await ativaPosterior(cliente, cobranca.pessoa_id, cobranca.competencia_ano, cobranca.competencia_mes);
+    const posterior = cobranca.modalidade === 'avulsa'
+      ? null
+      : await ativaPosterior(cliente, cobranca.pessoa_id, cobranca.competencia_ano, cobranca.competencia_mes);
     if (posterior) {
       return { ok: false, aviso: `Não é possível cancelar: existe cobrança posterior em ${formatarCompetencia(posterior.competencia_ano, posterior.competencia_mes)}.` };
     }
@@ -910,7 +1032,7 @@ export async function reabrirCobranca(
     if (cobranca.quitada_por_id) {
       return { ok: false, aviso: 'Esta cobrança foi quitada em cascata por outra competência e não pode ser reaberta aqui.' };
     }
-    const principal = await principalDaPessoa(cliente, cobranca.pessoa_id);
+    const principal = cobranca.modalidade === 'avulsa' ? cobranca : await principalDaPessoa(cliente, cobranca.pessoa_id);
     if (principal?.id !== cobranca.id) {
       return { ok: false, aviso: 'Só a cobrança da competência principal (a mais recente em aberto ou paga) pode ser reaberta.' };
     }
@@ -945,14 +1067,15 @@ export async function reabrirCobranca(
 }
 
 async function estadoParaAcoes(cliente: Consultavel, cobranca: Cobranca) {
-  const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
-  const principal = await principalDaPessoa(cliente, cobranca.pessoa_id);
-  const posterior = await ativaPosterior(cliente, cobranca.pessoa_id, cobranca.competencia_ano, cobranca.competencia_mes);
+  const avulsa = cobranca.modalidade === 'avulsa';
+  const vigente = avulsa ? null : await vigenteDaPessoa(cliente, cobranca.pessoa_id);
+  const principal = avulsa ? cobranca : await principalDaPessoa(cliente, cobranca.pessoa_id);
+  const posterior = avulsa ? null : await ativaPosterior(cliente, cobranca.pessoa_id, cobranca.competencia_ano, cobranca.competencia_mes);
   const ativo = await pixAtivo(cliente, cobranca.id);
   const ultimo = await ultimoPix(cliente, cobranca.id);
   return acoesDisponiveis({
     status: cobranca.status,
-    vigente: vigente?.id === cobranca.id,
+    vigente: avulsa ? cobranca.status === 'aberta' : vigente?.id === cobranca.id,
     temAtivaPosterior: Boolean(posterior),
     temPixAtivo: Boolean(ativo),
     ultimoPix: ultimo?.status_local ?? null,
@@ -975,6 +1098,8 @@ export async function gerarNovoPix(app: App, cobrancaId: string, agora = app.clo
     const linhas = await linhasDa(cliente, cobranca.id);
     const total = linhas.reduce((soma, linha) => soma + linha.valorCentavos, 0);
     if (total <= 0) return { ok: false, aviso: 'A cobrança não tem valor para um PIX.' };
+    const emissao = txidDaEmissao(cobranca, pessoa.nome);
+    if (emissao.aviso) return { ok: false, aviso: emissao.aviso };
     const pixId = randomUUID();
     const chave = randomUUID();
     const vence = somarDias(agora, pessoa.validade_pix_dias);
@@ -995,6 +1120,7 @@ export async function gerarNovoPix(app: App, cobrancaId: string, agora = app.clo
       total,
       vence,
       agora,
+      txid: emissao.txid,
     });
     return { ok: true };
   });
@@ -1012,6 +1138,8 @@ export async function tentarEmissao(app: App, cobrancaId: string, agora = app.cl
     const pix = await ultimoPix(cliente, cobranca.id);
     const pessoa = await pessoaPorId(cliente, cobranca.pessoa_id);
     if (!pix || !pessoa) return { ok: false, aviso: 'Não há emissão para tentar de novo.' };
+    const emissao = txidDaEmissao(cobranca, pessoa.nome);
+    if (emissao.aviso) return { ok: false, aviso: emissao.aviso };
     await transacao(cliente, async () => {
       await cliente.query(
         `UPDATE pix SET status_local = 'emitindo', motivo = NULL WHERE id = $1 AND status_local IN ('falha_emissao', 'emitindo')`,
@@ -1028,6 +1156,7 @@ export async function tentarEmissao(app: App, cobrancaId: string, agora = app.cl
       total: pix.valor_centavos,
       vence: pix.vence_em,
       agora,
+      txid: emissao.txid,
     });
     if (ok) await enviarMensagem(app, cliente, cobranca.id, 'cobranca', agora);
     return ok ? { ok: true } : { ok: false, aviso: 'A emissão do PIX falhou de novo. O motivo está na cobrança.' };
@@ -1167,20 +1296,18 @@ export async function enviarNotificacoesCobrancaDevidas(app: App, agora = app.cl
   for (const cobranca of abertas) {
     try {
       await comTravaPessoa(app.pool, cobranca.pessoa_id, async (cliente) => {
-        const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
-        if (vigente?.id !== cobranca.id) return;
         const detalhe = await cobrancaPorId(cliente, cobranca.id);
+        if (!detalhe) return;
+        if (detalhe.modalidade !== 'avulsa') {
+          const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
+          if (vigente?.id !== cobranca.id) return;
+        }
         const pessoa = await pessoaPorId(cliente, cobranca.pessoa_id);
         let pix = await ultimoPix(cliente, cobranca.id);
-        if (!detalhe || !pessoa || !pix?.copia_e_cola) return;
+        if (!pessoa || !pix?.copia_e_cola) return;
         if (pix.status_local === 'emitindo' || pix.status_local === 'falha_emissao') return;
         pix = await sincronizarContadorPrimeiraNotificacao(cliente, cobranca.id, pix);
-        const vence = vencimentoCobranca({
-          competenciaAno: detalhe.competencia_ano,
-          competenciaMes: detalhe.competencia_mes,
-          diaCobranca: pessoa.dia_cobranca,
-          prazoDias: pessoa.validade_pix_dias,
-        });
+        const vence = vencimentoParaAvisos(detalhe, pessoa);
         const devidas = notificacoesCobrancaDevidas(
           agora,
           vence,
@@ -1216,19 +1343,24 @@ export async function enviarInadimplenciasDevidas(app: App, agora = app.clock())
   for (const cobranca of abertas) {
     try {
       await comTravaPessoa(app.pool, cobranca.pessoa_id, async (cliente) => {
-        const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
-        if (vigente?.id !== cobranca.id) return;
         const detalhe = await cobrancaPorId(cliente, cobranca.id);
+        if (!detalhe) return;
+        if (detalhe.modalidade !== 'avulsa') {
+          const vigente = await vigenteDaPessoa(cliente, cobranca.pessoa_id);
+          if (vigente?.id !== cobranca.id) return;
+        }
         const pessoa = await pessoaPorId(cliente, cobranca.pessoa_id);
         const pix = await ultimoPix(cliente, cobranca.id);
-        if (!detalhe || !pessoa || !pix || pix.aviso_inadimplencia_em) return;
+        if (!pessoa || !pix || pix.aviso_inadimplencia_em) return;
         if (pix.status_local !== 'pendente' && pix.status_local !== 'expirado' && pix.status_local !== 'falha_cancelamento') return;
-        const limite = limiteAvisoInadimplencia({
-          competenciaAno: detalhe.competencia_ano,
-          competenciaMes: detalhe.competencia_mes,
-          diaCobranca: pessoa.dia_cobranca,
-          diasAposCobranca: pessoa.dias_aviso_inadimplencia,
-        });
+        const limite = detalhe.modalidade === 'avulsa'
+          ? somarDias(vencimentoParaAvisos(detalhe, pessoa), pessoa.dias_aviso_inadimplencia)
+          : limiteAvisoInadimplencia({
+              competenciaAno: detalhe.competencia_ano,
+              competenciaMes: detalhe.competencia_mes,
+              diaCobranca: pessoa.dia_cobranca,
+              diasAposCobranca: pessoa.dias_aviso_inadimplencia,
+            });
         if (agora.getTime() < limite.getTime()) return;
         await enviarMensagem(app, cliente, cobranca.id, 'inadimplencia', agora);
         await transacao(cliente, async () => {

@@ -12,6 +12,7 @@ export type EntradaEmissao = {
   mes: number;
   total: number;
   vence: Date;
+  txid?: string;
 };
 
 export type PixEmitido = {
@@ -35,7 +36,7 @@ export async function emitirPix(
   const { chave, recebedor, cidade } = await carregarPix(cliente);
   if (!chave) return { ok: false, motivo: 'Chave PIX não configurada em Configuração.' };
   try {
-    const txid = txidCobranca(entrada.pessoa.nome, entrada.ano, entrada.mes);
+    const txid = entrada.txid ?? txidCobranca(entrada.pessoa.nome, entrada.ano, entrada.mes);
     const copiaECola = gerarPixCopiaECola({
       chave,
       recebedor,

@@ -15,13 +15,14 @@ import {
   somarDias,
   vencimentoCobranca,
 } from '../src/domain/calendar.ts';
+import { linhasAvulsas } from '../src/cobrancas.ts';
 import { notificacoesCobrancaDevidas } from '../src/domain/notificacoes-cobranca.ts';
 import { comporLinhas, itemCobreCompetencia, type ItemComposicao, type LinhaRascunho } from '../src/domain/composicao.ts';
 import { planejarTrocaDeDia } from '../src/domain/dia.ts';
 import { normalizarCpf, normalizarWhatsapp } from '../src/domain/documento.ts';
 import { caminhoProibido, nomeEstaticoPermitido } from '../src/caminho.ts';
 import { casarPixNativos } from '../src/domain/conciliacao.ts';
-import { crc16, gerarPixCopiaECola, txidCobranca } from '../src/domain/pix.ts';
+import { crc16, gerarPixCopiaECola, txidAvulsa, txidCobranca } from '../src/domain/pix.ts';
 import { lerPagamentoPixRecebido } from '../src/mercadopago.ts';
 import { hostRemotoPermitido, urlHttpRemotaPermitida } from '../src/domain/url.ts';
 import { formatarCentavos, formatarReais, interpretarReais } from '../src/domain/money.ts';
@@ -137,6 +138,32 @@ test('troca de dia segue o exemplo de junho', () => {
   assert.match(hojeMesmo.avisos[0] ?? '', /09:00 já passou/);
 });
 
+test('txid da avulsa não repete o da cobrança mensal', () => {
+  const mensal = txidCobranca('Ana', 2026, 11);
+  const avulsa = txidAvulsa('Ana', 6, 11, 2026, 'ab12');
+  const outra = txidAvulsa('Ana', 6, 11, 2026, 'cd34');
+  assert.notEqual(avulsa, mensal);
+  assert.notEqual(avulsa, outra);
+  assert.ok(avulsa.length <= 25);
+  assert.match(avulsa, /06112026AAB12$/);
+});
+
+test('item avulso com valor e sem descrição é recusado', () => {
+  const semDescricao = linhasAvulsas([{ descricao: '   ', valorCentavos: 1500 }]);
+  assert.equal(semDescricao.ok, false);
+  const semValor = linhasAvulsas([{ descricao: 'Extra', valorCentavos: Number.NaN }]);
+  assert.equal(semValor.ok, false);
+  const ok = linhasAvulsas([
+    { descricao: ' Extra ', valorCentavos: 1500 },
+    { descricao: 'Taxa', valorCentavos: 200 },
+  ]);
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.deepEqual(ok.linhas, [
+    { descricao: 'Extra', valorCentavos: 1500 },
+    { descricao: 'Taxa', valorCentavos: 200 },
+  ]);
+});
+
 test('lembretes de cobrança seguem o vencimento da cobrança', () => {
   const vence = vencimentoCobranca({ competenciaAno: 2026, competenciaMes: 4, diaCobranca: 10, prazoDias: 10 });
   assert.equal(vence.toISOString(), civilParaUtc(2026, 4, 20, 9, 0, 0).toISOString());
@@ -151,6 +178,10 @@ test('emissão PIX é só local (sem app.mp.criar no módulo de provedores)', ()
   assert.doesNotMatch(fonte, /mp\.criar/);
   assert.doesNotMatch(fonte, /emitirMercadoPago/);
   assert.doesNotMatch(fonte, /mercadopago\.com/);
+  const cobrancas = readFileSync(new URL('../src/cobrancas.ts', import.meta.url), 'utf8');
+  const tentativa = cobrancas.slice(cobrancas.indexOf('export async function tentarEmissao'), cobrancas.indexOf('export async function invalidarPix'));
+  assert.match(tentativa, /txidDaEmissao/);
+  assert.match(tentativa, /txid: emissao\.txid/);
 });
 
 test('período do dashboard, meses do gráfico e situação da cobrança', () => {

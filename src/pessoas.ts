@@ -159,7 +159,7 @@ export async function atualizarPessoa(
   const hoje = partesNoFuso(agora);
   const ativas = await app.pool.query(
     `SELECT 1 FROM cobranca
-     WHERE pessoa_id = $1 AND status IN ('aberta', 'paga')
+     WHERE pessoa_id = $1 AND modalidade = 'mensal' AND status IN ('aberta', 'paga')
        AND competencia_ano = $2 AND competencia_mes = $3`,
     [id, hoje.year, hoje.month],
   );

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { App } from './app.ts';
 import { carregarEvolution, carregarSmtp } from './configuracao.ts';
 import { comTravaPessoa, consultar, transacao, type Cliente } from './db.ts';
-import { formatarCompetencia, formatarDataHora, diasInteirosDesde } from './domain/calendar.ts';
+import { formatarCompetencia, formatarDataHora, diasInteirosDesde, rotuloVencimentoCivil } from './domain/calendar.ts';
 import { formatarCentavos } from './domain/money.ts';
 import { preencherTemplate, type Canal, type TipoMensagem } from './domain/template.ts';
 import { reenvioPermitido, type StatusCobranca } from './domain/acoes.ts';
@@ -44,6 +44,8 @@ async function carregar(
     status: StatusCobranca;
     competencia_ano: number;
     competencia_mes: number;
+    modalidade: 'mensal' | 'avulsa';
+    vencimento_em: Date | null;
     paga_em: Date | null;
     canal_email_selecionado: boolean;
     canal_whatsapp_selecionado: boolean;
@@ -52,7 +54,7 @@ async function carregar(
     whatsapp: string;
   }>(
     cliente,
-    `SELECT c.id, c.status, c.competencia_ano, c.competencia_mes, c.paga_em,
+    `SELECT c.id, c.status, c.competencia_ano, c.competencia_mes, c.modalidade, c.vencimento_em, c.paga_em,
             c.canal_email_selecionado, c.canal_whatsapp_selecionado,
             p.nome, p.email, p.whatsapp
      FROM cobranca c
@@ -84,9 +86,14 @@ async function carregar(
   );
   const ativo = pixes.find((pix) => pix.status_local === 'pendente' || pix.status_local === 'falha_cancelamento') ?? null;
   const ultimo = pixes[0] ?? null;
-  const quitadas = await consultar<{ competencia_ano: number; competencia_mes: number }>(
+  const quitadas = await consultar<{
+    competencia_ano: number;
+    competencia_mes: number;
+    modalidade: 'mensal' | 'avulsa';
+    vencimento_em: Date | null;
+  }>(
     cliente,
-    `SELECT competencia_ano, competencia_mes FROM cobranca
+    `SELECT competencia_ano, competencia_mes, modalidade, vencimento_em FROM cobranca
      WHERE id = $1 OR quitada_por_id = $1
      ORDER BY competencia_ano, competencia_mes`,
     [cobrancaId],
@@ -99,14 +106,20 @@ async function carregar(
     whatsapp: cobranca.whatsapp,
     canalEmail: cobranca.canal_email_selecionado,
     canalWhatsapp: cobranca.canal_whatsapp_selecionado,
-    competencia: formatarCompetencia(cobranca.competencia_ano, cobranca.competencia_mes),
+    competencia: cobranca.modalidade === 'avulsa' && cobranca.vencimento_em
+      ? rotuloVencimentoCivil(cobranca.vencimento_em)
+      : formatarCompetencia(cobranca.competencia_ano, cobranca.competencia_mes),
     linhas,
     total: linhas.reduce((soma, linha) => soma + linha.valor_centavos, 0),
     copiaCola: ativo?.copia_e_cola ?? (opcoes?.permitirPixEncerrado ? ultimo?.copia_e_cola ?? null : null),
     validadeDias: ativo?.validade_dias ?? ultimo?.validade_dias ?? null,
     venceEm: ativo?.vence_em ?? ultimo?.vence_em ?? null,
     pagoEm: cobranca.paga_em,
-    competenciasQuitadas: quitadas.map((item) => formatarCompetencia(item.competencia_ano, item.competencia_mes)),
+    competenciasQuitadas: quitadas.map((item) =>
+      item.modalidade === 'avulsa' && item.vencimento_em
+        ? rotuloVencimentoCivil(item.vencimento_em)
+        : formatarCompetencia(item.competencia_ano, item.competencia_mes),
+    ),
     temPixAtivo: Boolean(ativo),
   };
 }

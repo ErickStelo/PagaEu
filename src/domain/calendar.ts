@@ -78,6 +78,17 @@ export function formatarCompetencia(ano: number, mes: number): string {
   return `${String(mes).padStart(2, '0')}/${ano}`;
 }
 
+export function rotuloVencimentoCivil(data: Date): string {
+  const dia = String(data.getDate()).padStart(2, '0');
+  const mes = String(data.getMonth() + 1).padStart(2, '0');
+  return `${dia}/${mes}/${data.getFullYear()}`;
+}
+
+/** 09:00 de Brasília no dia civil de uma data DATE do Postgres (meia-noite local). */
+export function instanteVencimentoCivil(data: Date): Date {
+  return civilParaUtc(data.getFullYear(), data.getMonth() + 1, data.getDate(), 9, 0, 0);
+}
+
 export function formatarDataHora(data: Date): string {
   const partes = partesNoFuso(data);
   const dia = String(partes.day).padStart(2, '0');

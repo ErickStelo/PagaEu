@@ -1,6 +1,6 @@
 import type { Flash } from './acesso.ts';
 import type { ResultadoConsultaAbertas } from './cobrancas.ts';
-import type { CartaoPessoa, Detalhe, LinhaHistorico, LinhaResumoCobranca, SituacaoPessoa } from './consultas.ts';
+import type { CartaoPessoa, Detalhe, LinhaAvulsa, LinhaHistorico, LinhaResumoCobranca, SituacaoPessoa } from './consultas.ts';
 import type { Dashboard, MesGrafico } from './dashboard.ts';
 import { formatarCompetencia, formatarDataHora } from './domain/calendar.ts';
 import { competenciaParaCampo, type SituacaoCobranca } from './domain/painel.ts';
@@ -121,10 +121,11 @@ const NOMES_TIPO: Record<string, string> = {
 const NOMES_CANAL: Record<string, string> = { email: 'E-mail', whatsapp: 'WhatsApp' };
 const NOMES_STATUS: Record<string, string> = { aberta: 'Aberta', paga: 'Paga', cancelada: 'Cancelada' };
 
-type Secao = 'dashboard' | 'quem' | 'historico' | 'templates' | 'configuracao';
+type Secao = 'dashboard' | 'quem' | 'historico' | 'avulsas' | 'templates' | 'configuracao';
 
 function secaoAtual(caminho: string): Secao {
   if (caminho === '/') return 'dashboard';
+  if (caminho.startsWith('/avulsas')) return 'avulsas';
   if (caminho.startsWith('/cobrancas')) return 'historico';
   if (caminho.startsWith('/templates')) return 'templates';
   if (caminho.startsWith('/configuracao')) return 'configuracao';
@@ -152,6 +153,7 @@ export function layout(opcoes: {
           ${itemNav(atual, 'dashboard', '/', 'Dashboard', 'dashboard')}
           ${itemNav(atual, 'quem', '/quem-deve', 'Quem deve', 'quem')}
           ${itemNav(atual, 'historico', '/cobrancas', 'Cobranças', 'historico')}
+          ${itemNav(atual, 'avulsas', '/avulsas', 'Avulsas', 'aviso')}
           ${itemNav(atual, 'templates', '/templates', 'Templates', 'templates')}
           ${itemNav(atual, 'configuracao', '/configuracao', 'Configuração', 'engrenagem')}
         </nav>
@@ -1493,6 +1495,35 @@ export function paginaPessoa(
     </form>`;
 }
 
+export function paginaAvulsas(linhas: LinhaAvulsa[], pessoas: Pessoa[], csrfToken: string, vencimento: string): string {
+  const opcoes = pessoas.map((pessoa) => `<option value="${e(pessoa.id)}">${e(pessoa.nome)}</option>`).join('');
+  const campos = Array.from({ length: 8 }, (_, indice) => {
+    const n = indice + 1;
+    return `<div class="row">
+      <label>Item ${n}<input name="descricao_${n}" maxlength="200" placeholder="Descrição"></label>
+      <label>Valor<input name="valor_${n}" inputmode="decimal" placeholder="0,00"></label>
+    </div>`;
+  }).join('');
+  const corpo = linhas.map((linha) => `<tr>
+      <td><a href="/cobrancas/${e(linha.id)}">${e(linha.pessoa)}</a></td>
+      <td>${e(linha.vencimento)}</td>
+      <td>${tagStatus(linha.status)}</td>
+      <td class="dinheiro">${formatarReais(linha.total)}</td>
+    </tr>`).join('');
+  return `<h1>Cobranças avulsas</h1>
+    <p class="sub">Itens desta cobrança não entram na recorrência. O vencimento escolhido baseia os lembretes e o aviso de atraso.</p>
+    <form class="bloco" method="post" action="/avulsas">
+      ${csrf(csrfToken)}
+      <div class="row">
+        <label>Pessoa<select name="pessoa_id" required><option value="">Selecione</option>${opcoes}</select></label>
+        <label>Vencimento<input name="vencimento" type="date" required value="${e(vencimento)}"></label>
+      </div>
+      ${campos}
+      <div class="acoes"><button type="submit">${rotulo('enviar', 'Gerar avulsa')}</button></div>
+    </form>
+    <table><thead><tr><th>Pessoa</th><th>Vencimento</th><th>Status</th><th>Total</th></tr></thead><tbody>${corpo || '<tr><td colspan="4">Nenhuma avulsa.</td></tr>'}</tbody></table>`;
+}
+
 export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], csrfToken: string, filtro: { pessoa?: string; status?: string; mes?: string; ano?: string }): string {
   const opcoes = pessoas.map((pessoa) => `<option value="${e(pessoa.id)}" ${filtro.pessoa === pessoa.id ? 'selected' : ''}>${e(pessoa.nome)}</option>`).join('');
   const corpo = linhas.map((linha) => `<tr>
@@ -1539,8 +1570,8 @@ export function paginaDetalhe(detalhe: Detalhe, csrfToken: string, motivo = ''):
     </tr>`).join('');
   const eventos = detalhe.eventos.map((evento) => `<li>${e(evento.efeito)} · ${formatarReais(evento.valorCentavos)} · ${e(formatarDataHora(evento.recebidoEm))}</li>`).join('');
   const afetadas = detalhe.linhasAfetadas.map((linha) => `${linha.descricao} (${String(linha.mes).padStart(2, '0')}/${linha.ano})`).join(', ');
-  return `<p class="trilha"><a href="/cobrancas">Cobranças</a> / ${e(detalhe.pessoa)}</p>
-    <div class="topo"><div><h1>${e(detalhe.pessoa)} · ${e(detalhe.competencia)}</h1>
+  return `<p class="trilha"><a href="${detalhe.avulsa ? '/avulsas' : '/cobrancas'}">${detalhe.avulsa ? 'Avulsas' : 'Cobranças'}</a> / ${e(detalhe.pessoa)}</p>
+    <div class="topo"><div><h1>${e(detalhe.pessoa)} · ${e(detalhe.competencia)}${detalhe.avulsa ? ' · avulsa' : ''}</h1>
     <p class="sub"><a href="/pessoas/${e(detalhe.pessoaId)}">${e(detalhe.pessoa)}</a> · ${tagStatus(detalhe.status)} · ${e(detalhe.origem)}${detalhe.pagaEm ? ` · paga em ${e(formatarDataHora(detalhe.pagaEm))} (${e(detalhe.origemBaixa)})` : ''}</p></div>
     <p class="dinheiro">Total ${formatarReais(detalhe.total)}</p></div>
     ${detalhe.alerta || afetadas ? `<p class="alerta">A vigente inclui itens já pagos por um PIX antigo${afetadas ? `: ${e(afetadas)}` : ''}.</p>` : ''}

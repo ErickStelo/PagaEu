@@ -2,7 +2,7 @@ import type { App } from './app.ts';
 import { principalDaPessoa, vigenteDaPessoa } from './cobrancas.ts';
 import { consultar } from './db.ts';
 import { acoesDisponiveis, type StatusCobranca, type StatusPix } from './domain/acoes.ts';
-import { diaEfetivo, diasInteirosDesde, formatarCompetencia, partesNoFuso } from './domain/calendar.ts';
+import { diaEfetivo, diasInteirosDesde, formatarCompetencia, partesNoFuso, rotuloVencimentoCivil } from './domain/calendar.ts';
 import { situacaoCobranca, type SituacaoCobranca } from './domain/painel.ts';
 import type { ProvedorPix } from './configuracao.ts';
 import type { Pessoa } from './pessoas.ts';
@@ -235,6 +235,8 @@ export async function listarHistorico(
     nome: string;
     competencia_ano: number;
     competencia_mes: number;
+    modalidade: 'mensal' | 'avulsa';
+    vencimento_em: Date | null;
     status: StatusCobranca;
     origem_geracao: string;
     paga_em: Date | null;
@@ -246,7 +248,7 @@ export async function listarHistorico(
     embutida_mes: number | null;
   }>(
     app.pool,
-    `SELECT c.id, c.pessoa_id, p.nome, c.competencia_ano, c.competencia_mes, c.status, c.origem_geracao, c.paga_em,
+    `SELECT c.id, c.pessoa_id, p.nome, c.competencia_ano, c.competencia_mes, c.modalidade, c.vencimento_em, c.status, c.origem_geracao, c.paga_em,
             c.canal_email_selecionado, c.canal_whatsapp_selecionado,
             COALESCE((SELECT SUM(valor_centavos) FROM linha_cobranca l WHERE l.cobranca_id = c.id), 0)::int AS total,
             emb.competencia_ano AS embutida_ano, emb.competencia_mes AS embutida_mes,
@@ -292,7 +294,9 @@ export async function listarHistorico(
       id: linha.id,
       pessoa: linha.nome,
       pessoaId: linha.pessoa_id,
-      competencia: formatarCompetencia(linha.competencia_ano, linha.competencia_mes),
+      competencia: linha.modalidade === 'avulsa' && linha.vencimento_em
+        ? rotuloVencimentoCivil(linha.vencimento_em)
+        : formatarCompetencia(linha.competencia_ano, linha.competencia_mes),
       status: linha.status,
       pagaEm: linha.paga_em
         ? (() => {
@@ -317,6 +321,7 @@ export type Detalhe = {
   pessoaId: string;
   pessoa: string;
   competencia: string;
+  avulsa: boolean;
   status: StatusCobranca;
   origem: string;
   pagaEm: Date | null;
@@ -353,6 +358,40 @@ export type Detalhe = {
   podeReenviar: Record<string, boolean>;
 };
 
+export type LinhaAvulsa = {
+  id: string;
+  pessoa: string;
+  vencimento: string;
+  status: StatusCobranca;
+  total: number;
+};
+
+export async function listarAvulsas(app: App): Promise<LinhaAvulsa[]> {
+  const linhas = await consultar<{
+    id: string;
+    nome: string;
+    vencimento_em: Date;
+    status: StatusCobranca;
+    total: number;
+  }>(
+    app.pool,
+    `SELECT c.id, p.nome, c.vencimento_em, c.status,
+            COALESCE((SELECT SUM(valor_centavos) FROM linha_cobranca l WHERE l.cobranca_id = c.id), 0)::int AS total
+     FROM cobranca c
+     JOIN pessoa p ON p.id = c.pessoa_id
+     WHERE c.modalidade = 'avulsa'
+     ORDER BY c.vencimento_em DESC, p.nome
+     LIMIT 200`,
+  );
+  return linhas.map((linha) => ({
+    id: linha.id,
+    pessoa: linha.nome,
+    vencimento: rotuloVencimentoCivil(linha.vencimento_em),
+    status: linha.status,
+    total: linha.total,
+  }));
+}
+
 export async function detalharCobranca(app: App, id: string): Promise<Detalhe | null> {
   const cobrancas = await consultar<{
     id: string;
@@ -370,6 +409,8 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     alerta_itens_ja_pagos: boolean;
     canal_email_selecionado: boolean;
     canal_whatsapp_selecionado: boolean;
+    modalidade: 'mensal' | 'avulsa';
+    vencimento_em: Date | null;
   }>(
     app.pool,
     `SELECT c.*, p.nome FROM cobranca c JOIN pessoa p ON p.id = c.pessoa_id WHERE c.id = $1`,
@@ -412,12 +453,13 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     'SELECT efeito, valor_centavos, recebido_em FROM evento_pagamento WHERE cobranca_id = $1 ORDER BY recebido_em',
     [id],
   );
-  const vigente = await vigenteDaPessoa(app.pool, cobranca.pessoa_id);
-  const principal = await principalDaPessoa(app.pool, cobranca.pessoa_id);
-  const posterior = await consultar<{ id: string }>(
+  const avulsa = cobranca.modalidade === 'avulsa';
+  const vigente = avulsa ? null : await vigenteDaPessoa(app.pool, cobranca.pessoa_id);
+  const principal = avulsa ? null : await principalDaPessoa(app.pool, cobranca.pessoa_id);
+  const posterior = avulsa ? [] : await consultar<{ id: string }>(
     app.pool,
     `SELECT id FROM cobranca
-     WHERE pessoa_id = $1 AND status IN ('aberta', 'paga')
+     WHERE pessoa_id = $1 AND modalidade = 'mensal' AND status IN ('aberta', 'paga')
        AND (competencia_ano, competencia_mes) > ($2, $3) LIMIT 1`,
     [cobranca.pessoa_id, cobranca.competencia_ano, cobranca.competencia_mes],
   );
@@ -425,12 +467,12 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
   const ultimo = pixes[0] ?? null;
   const acoes = acoesDisponiveis({
     status: cobranca.status,
-    vigente: vigente?.id === cobranca.id,
+    vigente: avulsa ? cobranca.status === 'aberta' : vigente?.id === cobranca.id,
     temAtivaPosterior: posterior.length > 0,
     temPixAtivo: Boolean(ativo),
     ultimoPix: ultimo?.status_local ?? null,
     quitadaPorCascata: Boolean(cobranca.quitada_por_id),
-    competenciaPrincipal: principal?.id === cobranca.id,
+    competenciaPrincipal: avulsa || principal?.id === cobranca.id,
   });
   const tipos = ['cobranca', 'confirmacao', 'inadimplencia'] as const;
   const canais = ['email', 'whatsapp'] as const;
@@ -462,7 +504,10 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     id: cobranca.id,
     pessoaId: cobranca.pessoa_id,
     pessoa: cobranca.nome,
-    competencia: formatarCompetencia(cobranca.competencia_ano, cobranca.competencia_mes),
+    competencia: avulsa && cobranca.vencimento_em
+      ? rotuloVencimentoCivil(cobranca.vencimento_em)
+      : formatarCompetencia(cobranca.competencia_ano, cobranca.competencia_mes),
+    avulsa,
     status: cobranca.status,
     origem: origemNome[cobranca.origem_geracao] ?? cobranca.origem_geracao,
     pagaEm: cobranca.paga_em,
@@ -474,7 +519,9 @@ export async function detalharCobranca(app: App, id: string): Promise<Detalhe | 
     linhasAfetadas: await linhasAfetadas(app, cobranca.id),
     linhas: linhas.map((linha) => ({
       descricao: linha.descricao,
-      competencia: formatarCompetencia(linha.competencia_origem_ano, linha.competencia_origem_mes),
+      competencia: avulsa && cobranca.vencimento_em
+        ? rotuloVencimentoCivil(cobranca.vencimento_em)
+        : formatarCompetencia(linha.competencia_origem_ano, linha.competencia_origem_mes),
       valorCentavos: linha.valor_centavos,
       carregada: linha.origem_cobranca_id !== cobranca.id,
     })),

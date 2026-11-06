@@ -56,6 +56,15 @@ export function txidCobranca(nome: string, ano: number, mes: number): string {
   return `${prefixo || 'COBRANCA'}${competencia}`.slice(0, LIMITE_TXID);
 }
 
+/** Identificador da avulsa: nome + DDMMAAAA + A + sufixo. Não coincide com o txid mensal. */
+export function txidAvulsa(nome: string, dia: number, mes: number, ano: number, sufixo: string): string {
+  const extra = sufixo.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 4).padEnd(4, 'X');
+  const cauda = `${String(dia).padStart(2, '0')}${String(mes).padStart(2, '0')}${ano}A${extra}`;
+  const primeiro = textoEmv(nome.trim().split(/\s+/)[0] ?? '', LIMITE_TXID).toUpperCase();
+  const prefixo = primeiro.slice(0, LIMITE_TXID - cauda.length) || 'AV';
+  return `${prefixo}${cauda}`.slice(0, LIMITE_TXID);
+}
+
 export function gerarPixCopiaECola(dados: DadosPixEstatico): string {
   const chave = dados.chave.trim();
   if (!chave || chave.length > LIMITE_CHAVE) throw new Error('Chave PIX inválida.');

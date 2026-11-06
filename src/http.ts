@@ -17,7 +17,7 @@ import {
   type Flash,
   type Sessao,
 } from './acesso.ts';
-import { detalharCobranca, listarHistorico, listarLinhasDasCobrancas, montarPainel } from './consultas.ts';
+import { detalharCobranca, listarAvulsas, listarHistorico, listarLinhasDasCobrancas, montarPainel } from './consultas.ts';
 import { montarDashboard } from './dashboard.ts';
 import { normalizarPeriodo, type Competencia, type Periodo } from './domain/painel.ts';
 import {
@@ -25,6 +25,7 @@ import {
   cancelarCobranca,
   reabrirCobranca,
   consultarCobrancasAbertas,
+  criarCobrancaAvulsa,
   gerarCobranca,
   gerarLote,
   gerarNovoPix,
@@ -33,7 +34,7 @@ import {
   type ResultadoConsultaAbertas,
   type ResultadoLote,
 } from './cobrancas.ts';
-import { diaEfetivo, formatarDataHora, partesNoFuso } from './domain/calendar.ts';
+import { diaEfetivo, formatarDataHora, partesNoFuso, ultimoDiaDoMes } from './domain/calendar.ts';
 import { interpretarReais } from './domain/money.ts';
 import type { Canal, TipoMensagem } from './domain/template.ts';
 import {
@@ -72,6 +73,7 @@ import {
   layout,
   paginaConfiguracao,
   paginaDetalhe,
+  paginaAvulsas,
   paginaHistorico,
   paginaLogin,
   paginaPessoa,
@@ -650,6 +652,40 @@ rota('POST', '/itens/:id/excluir', async (ctx) => {
   await flashERedireciona(ctx, pessoaId ? `/pessoas/${pessoaId}?aba=lancamentos` : '/', {
     tipo: apagado.ok ? 'ok' : 'erro',
     texto: apagado.ok ? 'Item excluído.' : apagado.aviso,
+  });
+});
+
+rota('GET', '/avulsas', async (ctx) => {
+  if (!ctx.sessao) return redirecionar(ctx, '/login');
+  const hoje = partesNoFuso(ctx.app.clock());
+  const vencimento = `${hoje.year}-${String(hoje.month).padStart(2, '0')}-${String(hoje.day).padStart(2, '0')}`;
+  html(ctx, 200, 'Avulsas', paginaAvulsas(await listarAvulsas(ctx.app), await listarPessoas(ctx.app), ctx.sessao.csrf, vencimento), await pegarFlash(ctx.app, ctx.sessao.id));
+});
+
+rota('POST', '/avulsas', async (ctx) => {
+  if (!ctx.sessao || !csrfConfere(ctx)) return html(ctx, 403, 'Acesso', '<h1>Ação recusada</h1>', null);
+  const pessoaId = ctx.form.get('pessoa_id') ?? '';
+  if (!UUID.test(pessoaId)) return flashERedireciona(ctx, '/avulsas', { tipo: 'erro', texto: 'Selecione a pessoa.' });
+  const bruto = ctx.form.get('vencimento') ?? '';
+  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(bruto);
+  const ano = partes ? Number(partes[1]) : NaN;
+  const mes = partes ? Number(partes[2]) : NaN;
+  const dia = partes ? Number(partes[3]) : NaN;
+  if (!partes || mes < 1 || mes > 12 || dia < 1 || dia > ultimoDiaDoMes(ano, mes)) {
+    return flashERedireciona(ctx, '/avulsas', { tipo: 'erro', texto: 'Data de vencimento inválida.' });
+  }
+  const itens = [];
+  for (let n = 1; n <= 8; n += 1) {
+    const descricao = (ctx.form.get(`descricao_${n}`) ?? '').trim();
+    const valor = (ctx.form.get(`valor_${n}`) ?? '').trim();
+    if (!descricao && !valor) continue;
+    itens.push({ descricao, valorCentavos: interpretarReais(valor) ?? Number.NaN });
+  }
+  const criada = await criarCobrancaAvulsa(ctx.app, pessoaId, { ano, mes, dia }, itens);
+  if (!criada.ok) return flashERedireciona(ctx, '/avulsas', { tipo: 'erro', texto: criada.aviso });
+  await flashERedireciona(ctx, `/cobrancas/${criada.cobrancaId}`, {
+    tipo: criada.pixOk ? 'ok' : 'erro',
+    texto: criada.pixOk ? 'Cobrança avulsa gerada.' : 'A avulsa foi registrada, mas a emissão do PIX falhou.',
   });
 });
 

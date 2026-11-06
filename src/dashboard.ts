@@ -73,6 +73,7 @@ export async function montarDashboard(app: App, periodo: Periodo, agora = app.cl
             EXISTS (
               SELECT 1 FROM cobranca posterior
               WHERE posterior.pessoa_id = c.pessoa_id
+                AND posterior.modalidade = 'mensal'
                 AND posterior.status IN ('aberta', 'paga')
                 AND (posterior.competencia_ano, posterior.competencia_mes) > (c.competencia_ano, c.competencia_mes)
             ) AS superada,
@@ -85,7 +86,7 @@ export async function montarDashboard(app: App, periodo: Periodo, agora = app.cl
        ORDER BY pix.criado_em DESC
        LIMIT 1
      ) ultimo ON true
-     WHERE c.status IN ('aberta', 'paga')
+     WHERE c.modalidade = 'mensal' AND c.status IN ('aberta', 'paga')
        AND (c.competencia_ano * 12 + c.competencia_mes - 1) BETWEEN $1 AND $2`,
     [inicioConsulta, fimPeriodo],
   );
