@@ -443,6 +443,9 @@ export function layout(opcoes: {
     .modal-rodape { justify-content:flex-end; margin-top:4px; }
     .modal-largo { max-width:min(480px, calc(100vw - 32px)); }
     .modal-mensagem { max-width:min(640px, calc(100vw - 32px)); max-height:min(85vh, 720px); overflow:auto; }
+    .modal-avulsa { max-width:min(640px, calc(100vw - 32px)); overflow:hidden; }
+    .modal-avulsa form { max-height:min(90vh, 820px); overflow:hidden; grid-template-rows:auto auto minmax(0, 1fr) auto; }
+    .itens-avulsa { overflow:auto; min-height:0; display:grid; gap:10px; padding-right:4px; }
     .mensagem-assunto { margin:0; }
     .mensagem-previa { margin:0; white-space:pre-wrap; font-family:Geist, sans-serif; font-size:.95rem; line-height:1.55; background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
     .consulta-resumo { display:grid; gap:12px; }
@@ -1495,7 +1498,7 @@ export function paginaPessoa(
     </form>`;
 }
 
-export function paginaAvulsas(linhas: LinhaAvulsa[], pessoas: Pessoa[], csrfToken: string, vencimento: string): string {
+export function paginaAvulsas(linhas: LinhaAvulsa[], pessoas: Pessoa[], csrfToken: string, vencimento: string, abrirFormulario = false): string {
   const opcoes = pessoas.map((pessoa) => `<option value="${e(pessoa.id)}">${e(pessoa.nome)}</option>`).join('');
   const campos = Array.from({ length: 8 }, (_, indice) => {
     const n = indice + 1;
@@ -1510,18 +1513,32 @@ export function paginaAvulsas(linhas: LinhaAvulsa[], pessoas: Pessoa[], csrfToke
       <td>${tagStatus(linha.status)}</td>
       <td class="dinheiro">${formatarReais(linha.total)}</td>
     </tr>`).join('');
-  return `<h1>Cobranças avulsas</h1>
-    <p class="sub">Itens desta cobrança não entram na recorrência. O vencimento escolhido baseia os lembretes e o aviso de atraso.</p>
-    <form class="bloco" method="post" action="/avulsas">
-      ${csrf(csrfToken)}
-      <div class="row">
-        <label>Pessoa<select name="pessoa_id" required><option value="">Selecione</option>${opcoes}</select></label>
-        <label>Vencimento<input name="vencimento" type="date" required value="${e(vencimento)}"></label>
-      </div>
-      ${campos}
-      <div class="acoes"><button type="submit">${rotulo('enviar', 'Gerar avulsa')}</button></div>
-    </form>
-    <table><thead><tr><th>Pessoa</th><th>Vencimento</th><th>Status</th><th>Total</th></tr></thead><tbody>${corpo || '<tr><td colspan="4">Nenhuma avulsa.</td></tr>'}</tbody></table>`;
+  const inicial = abrirFormulario ? ' data-modal-inicial' : '';
+  return `<div class="topo"><div><h1>Cobranças avulsas</h1>
+    <p class="sub">Cobranças fora da recorrência mensal.</p></div>
+    ${botaoModal('modal-avulsa-nova', 'Adicionar', '', 'mais')}</div>
+    <table><thead><tr><th>Pessoa</th><th>Vencimento</th><th>Status</th><th>Total</th></tr></thead><tbody>${corpo || '<tr><td colspan="4">Nenhuma avulsa.</td></tr>'}</tbody></table>
+    <dialog class="modal modal-avulsa" id="modal-avulsa-nova"${inicial}>
+      <form method="post" action="/avulsas">
+        ${csrf(csrfToken)}
+        <header class="modal-cabeca">
+          <div>
+            <h2>Nova cobrança avulsa</h2>
+            <p class="muted pequeno">Os itens não entram na recorrência. O vencimento baseia os lembretes e o aviso de atraso.</p>
+          </div>
+          ${botaoFechar()}
+        </header>
+        <div class="row">
+          <label>Pessoa<select name="pessoa_id" required><option value="">Selecione</option>${opcoes}</select></label>
+          <label>Vencimento<input name="vencimento" type="date" required value="${e(vencimento)}"></label>
+        </div>
+        <div class="itens-avulsa">${campos}</div>
+        <div class="acoes modal-rodape">
+          <button type="button" class="secundario modal-fechar">${rotulo('fechar', 'Cancelar')}</button>
+          <button type="submit">${rotulo('enviar', 'Gerar avulsa')}</button>
+        </div>
+      </form>
+    </dialog>`;
 }
 
 export function paginaHistorico(linhas: LinhaHistorico[], pessoas: Pessoa[], csrfToken: string, filtro: { pessoa?: string; status?: string; mes?: string; ano?: string }): string {

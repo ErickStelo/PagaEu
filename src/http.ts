@@ -659,7 +659,14 @@ rota('GET', '/avulsas', async (ctx) => {
   if (!ctx.sessao) return redirecionar(ctx, '/login');
   const hoje = partesNoFuso(ctx.app.clock());
   const vencimento = `${hoje.year}-${String(hoje.month).padStart(2, '0')}-${String(hoje.day).padStart(2, '0')}`;
-  html(ctx, 200, 'Avulsas', paginaAvulsas(await listarAvulsas(ctx.app), await listarPessoas(ctx.app), ctx.sessao.csrf, vencimento), await pegarFlash(ctx.app, ctx.sessao.id));
+  const flash = await pegarFlash(ctx.app, ctx.sessao.id);
+  html(
+    ctx,
+    200,
+    'Avulsas',
+    paginaAvulsas(await listarAvulsas(ctx.app), await listarPessoas(ctx.app), ctx.sessao.csrf, vencimento, flash?.tipo === 'erro'),
+    flash,
+  );
 });
 
 rota('POST', '/avulsas', async (ctx) => {
